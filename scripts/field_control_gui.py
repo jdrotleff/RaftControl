@@ -10,6 +10,7 @@ import argparse
 import json
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -39,7 +40,20 @@ def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_GUI_CONFIG)
     parser.add_argument("--mode", choices=("controller", "viewer"), default="controller")
-    parser.add_argument("--local", action="store_true", help="Controller mode: own the hardware controller in this GUI process")
+    connection = parser.add_mutually_exclusive_group()
+    connection.add_argument(
+        "--local",
+        dest="local",
+        action="store_true",
+        help="Controller mode: own the hardware controller in this GUI process (default)",
+    )
+    connection.add_argument(
+        "--remote",
+        dest="local",
+        action="store_false",
+        help="Controller mode: connect to a separately running RaftControl server",
+    )
+    parser.set_defaults(local=True)
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     args = parser.parse_args(argv)
@@ -54,10 +68,13 @@ def main(argv: list[str] | None = None):
     client: RaftControlClient | None = None
     enabled = False
     active_action_id: str | None = None
+    viewed_action_id: str | None = None
 
     root = tk.Tk()
     root.title("RaftControl — Manual Field Control")
     root.geometry("1100x780")
+    mode_note_font = tkfont.nametofont("TkDefaultFont").copy()
+    mode_note_font.configure(slant="italic")
 
     fields = ["bx", "by", "fx", "fy", "FX", "FY", "duration"]
     labels = {
@@ -233,10 +250,22 @@ def main(argv: list[str] | None = None):
         ttk.Button(buttons, text="Disable", command=disable_hardware).pack(side="left", padx=4)
         ttk.Button(buttons, text="Send action", command=send_action).pack(side="left", padx=4)
         ttk.Button(buttons, text="Stop", command=stop_hardware).pack(side="left", padx=4)
+        mode_note = (
+            "Local controller — actions can be interrupted immediately"
+            if local_controller is not None
+            else "Remote controller — actions can be interrupted immediately"
+        )
+        ttk.Label(buttons, text=mode_note, font=mode_note_font).pack(side="left", padx=10)
     else:
         ttk.Label(buttons, text="READ-ONLY VIEWER").pack(side="left", padx=12)
+        ttk.Label(
+            buttons,
+            text="Viewer — actions can only be viewed",
+            font=mode_note_font,
+        ).pack(side="left", padx=10)
 
         def refresh_viewer():
+            nonlocal viewed_action_id
             if connect(show_error=False):
                 try:
                     records = client.recent()["actions"]
@@ -244,6 +273,13 @@ def main(argv: list[str] | None = None):
                         latest = records[-1]
                         status.set(f"VIEWER — latest {latest['action_id'][:8]} — {latest['status']}")
                         summary.set("RL actions: " + " | ".join(f"{r['action_id'][:8]}:{r['status']}" for r in records[-5:]))
+                        if latest["action_id"] != viewed_action_id:
+                            request = latest["request"]
+                            for name, entry in entries.items():
+                                entry.delete(0, tk.END)
+                                entry.insert(0, str(request[name]))
+                            viewed_action_id = latest["action_id"]
+                            update_preview()
                 except Exception as exc:
                     status.set(f"VIEWER ERROR — {exc}")
             root.after(250, refresh_viewer)

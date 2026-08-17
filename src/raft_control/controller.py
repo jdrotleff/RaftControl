@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 import uuid
 from collections.abc import Mapping
 
@@ -15,12 +14,21 @@ from .waveform import build_waveform
 class FieldController:
     def __init__(self, config: ControllerConfig, backend: Backend | None = None):
         self.config = config
-        self.backend = backend or (SimulationBackend() if config.backend == "simulation" else NIDAQmxBackend(config.channels, config.daq_device, config.current_limit_a))
+        self.backend = backend or (
+            SimulationBackend()
+            if config.backend == "simulation"
+            else NIDAQmxBackend(
+                config.channels,
+                config.daq_device,
+                config.current_limit_a,
+                config.safe_ramp_s,
+            )
+        )
         self.logger = EventLogger(config.log_path)
         self.enabled = False
         self._records: dict[str, ActionRecord] = {}
         self._active: str | None = None
-        self._pending: str | None = None
+        self._stopping = False
         self._lock = threading.RLock()
 
     def _request(self, value):
@@ -55,8 +63,8 @@ class FieldController:
                 record = self._record(action_id, request, waveform, ActionStatus.REJECTED, "controller is disabled")
                 self._store_event(record, ActionStatus.REJECTED)
                 return record
-            if self._pending is not None:
-                record = self._record(action_id, request, waveform, ActionStatus.REJECTED, "one replacement action is already queued")
+            if self._stopping:
+                record = self._record(action_id, request, waveform, ActionStatus.REJECTED, "controller is stopping")
                 self._store_event(record, ActionStatus.REJECTED)
                 return record
             record = self._record(action_id, request, waveform, ActionStatus.QUEUED)
@@ -67,13 +75,8 @@ class FieldController:
                 self._emit(record, ActionStatus.QUEUED)
                 self.backend.start(waveform, lambda: self._started(action_id), lambda: self._duration(action_id), lambda e: self._done(action_id, e))
             else:
-                active = self._records[self._active]
-                if active.duration_elapsed:
-                    self._emit(record, ActionStatus.QUEUED)
-                    self._replace_active(action_id)
-                else:
-                    self._pending = action_id
-                    self._emit(record, ActionStatus.QUEUED)
+                self._emit(record, ActionStatus.QUEUED)
+                self._replace_active(action_id)
             return record
 
     def status(self, action_id: str) -> ActionRecord:
@@ -83,13 +86,18 @@ class FieldController:
     def stop(self, action_id: str | None = None):
         with self._lock:
             target = action_id or self._active
+            self._stopping = True
+        try:
             self.backend.stop()
+        finally:
+            with self._lock:
+                self._stopping = False
+        with self._lock:
             if target and target in self._records:
                 record = self._records[target]
                 if record.status not in (ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.REJECTED, ActionStatus.STOPPED):
                     self._emit(record, ActionStatus.STOPPED)
             self._active = None
-            self._pending = None
 
     def close(self):
         self.disable()
@@ -107,7 +115,22 @@ class FieldController:
     def _emit(self, record, status):
         record.status = status
         record.timestamps[status.value] = utc_now()
-        self.logger.write(status.value, action=record.as_dict())
+        # Lifecycle logs deliberately omit waveform arrays. Full arrays remain
+        # available through status/recent while the process is running.
+        self.logger.write(
+            status.value,
+            action_id=record.action_id,
+            status=status.value,
+            request=record.request.as_dict(),
+            backend=record.backend,
+            channel_mapping=record.channel_mapping,
+            calibration_version=record.calibration_version,
+            clipped=record.clipped,
+            min_currents_a=record.min_currents_a,
+            max_currents_a=record.max_currents_a,
+            error=record.error,
+            replacement_action_id=record.replacement_action_id,
+        )
 
     def _started(self, action_id):
         with self._lock:
@@ -115,14 +138,13 @@ class FieldController:
 
     def _duration(self, action_id):
         with self._lock:
+            if self._active != action_id:
+                return
             record = self._records[action_id]
             record.duration_elapsed = True
             record.tail_active = True
             self._emit(record, ActionStatus.DURATION_ELAPSED)
             self.logger.write("tail_started", action_id=action_id)
-            if self._pending is not None:
-                self._replace_active(self._pending)
-                self._pending = None
 
     def _replace_active(self, action_id):
         old_id = self._active
@@ -141,7 +163,11 @@ class FieldController:
     def _done(self, action_id, error):
         with self._lock:
             record = self._records[action_id]
+            if self._active != action_id and record.status == ActionStatus.REPLACED:
+                return
             record.tail_active = False
+            if error == "stopped":
+                return
             if error and error != "stopped":
                 record.error = error
                 self._emit(record, ActionStatus.FAILED)
@@ -149,7 +175,3 @@ class FieldController:
                 self._emit(record, ActionStatus.COMPLETED)
             if self._active == action_id:
                 self._active = None
-                pending = self._pending
-                self._pending = None
-                if pending is not None:
-                    self._replace_active(pending)

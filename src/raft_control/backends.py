@@ -32,6 +32,8 @@ class SimulationBackend(Backend):
         self._waveform = None
         self._replacement = None
         self._replacement_event = threading.Event()
+        self.last_output = np.zeros(4)
+        self.ramped_to_zero = False
 
     def start(self, waveform, on_started, on_duration, on_done):
         self._stop.clear()
@@ -43,20 +45,26 @@ class SimulationBackend(Backend):
             try:
                 on_started()
                 current = (waveform, on_started, on_duration, on_done)
-                while not self._stop.wait(self._duration):
-                    current[2]()
-                    self._replacement_event.wait()
-                    if self._stop.is_set():
-                        break
-                    replacement = self._replacement
-                    self._replacement = None
-                    self._replacement_event.clear()
-                    if replacement is None:
-                        continue
-                    current = replacement
-                    self._duration = max(0.0, (current[0].clipped_currents_a.shape[1] - 1) / current[0].sample_rate_hz)
-                    current[1]()
-                on_done("stopped")
+                started_at = time.monotonic()
+                duration_sent = False
+                while not self._stop.wait(0.005):
+                    self.last_output = current[0].clipped_currents_a[:, -1].copy()
+                    if not duration_sent and time.monotonic() - started_at >= self._duration:
+                        current[2]()
+                        duration_sent = True
+                    if self._replacement_event.is_set():
+                        replacement = self._replacement
+                        self._replacement = None
+                        self._replacement_event.clear()
+                        if replacement is not None:
+                            current = replacement
+                            self._duration = max(0.0, (current[0].clipped_currents_a.shape[1] - 1) / current[0].sample_rate_hz)
+                            started_at = time.monotonic()
+                            duration_sent = False
+                            current[1]()
+                self.last_output[:] = 0.0
+                self.ramped_to_zero = True
+                current[3]("stopped")
             except Exception as exc:
                 on_done(str(exc))
 
@@ -72,32 +80,37 @@ class SimulationBackend(Backend):
 
 
 class NIDAQmxBackend(Backend):
-    """Windows backend skeleton using one continuously owned DAQ task.
-
-    Hardware verification must be performed on Windows with NI-DAQmx installed.
-    The worker writes short rolling chunks so replacement does not require a
-    stop/start cycle. The controller remains the source of waveform chunks.
-    """
+    """Continuously streamed four-channel NI analog-output backend."""
 
     name = "nidaqmx"
 
-    def __init__(self, channels, device, output_limit=10.0):
+    def __init__(self, channels, device, output_limit=10.0, safe_ramp_s=0.05):
         self.channels, self.device = channels, device
         self.output_limit = output_limit
         self._task = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._replacement = None
+        self._replacement_event = threading.Event()
+        self._thread = None
+        self._safe_ramp_s = safe_ramp_s
 
     def _import(self):
         try:
             import nidaqmx
-            from nidaqmx.constants import AcquisitionType
-            return nidaqmx, AcquisitionType
+            from nidaqmx.constants import AcquisitionType, RegenerationMode
+            from nidaqmx.stream_writers import AnalogMultiChannelWriter
+            return nidaqmx, AcquisitionType, RegenerationMode, AnalogMultiChannelWriter
         except ImportError as exc:
             raise RuntimeError("install the RaftControl hardware extra on Windows") from exc
 
     def start(self, waveform, on_started, on_duration, on_done):
-        nidaqmx, acquisition = self._import()
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError("NI-DAQmx task is already running")
+        nidaqmx, acquisition, regeneration, writer_type = self._import()
+        self._stop.clear()
+        self._replacement_event.clear()
+        self._replacement = None
 
         def run():
             task = None
@@ -106,18 +119,56 @@ class NIDAQmxBackend(Backend):
                 task = nidaqmx.Task()
                 names = ",".join(f"{self.device}/{c}" for c in self.channels)
                 task.ao_channels.add_ao_voltage_chan(names, min_val=-self.output_limit, max_val=self.output_limit)
-                task.timing.cfg_samp_clk_timing(waveform.sample_rate_hz, sample_mode=acquisition.CONTINUOUS)
-                task.write(waveform.clipped_currents_a, auto_start=False)
+                chunk_samples = max(2, int(round(waveform.sample_rate_hz * 0.01)))
+                buffer_samples = chunk_samples * 4
+                task.timing.cfg_samp_clk_timing(
+                    waveform.sample_rate_hz,
+                    sample_mode=acquisition.CONTINUOUS,
+                    samps_per_chan=buffer_samples,
+                )
+                task.out_stream.regen_mode = regeneration.DONT_ALLOW_REGENERATION
+                writer = writer_type(task.out_stream, auto_start=False)
                 with self._lock:
                     self._task = task
-                self._stop.clear()
+                current = (waveform, on_started, on_duration, on_done)
+                sample_index = 0
+                last_sample = np.zeros(len(self.channels), dtype=float)
+
+                def next_chunk(source, index):
+                    values = source.clipped_currents_a
+                    indices = (np.arange(chunk_samples) + index) % values.shape[1]
+                    return np.ascontiguousarray(values[:, indices]), (index + chunk_samples) % values.shape[1]
+
+                initial, sample_index = next_chunk(waveform, sample_index)
+                writer.write_many_sample(initial, timeout=2.0)
+                last_sample = initial[:, -1].copy()
                 task.start()
                 on_started()
-                if self._stop.wait(max(0.0, waveform.time_s[-1])):
-                    return
-                on_duration()
-                while not self._stop.wait(0.05):
-                    pass
+                started_at = time.monotonic()
+                duration_sent = False
+                while not self._stop.is_set():
+                    if self._replacement_event.is_set():
+                        with self._lock:
+                            replacement = self._replacement
+                            self._replacement = None
+                            self._replacement_event.clear()
+                        if replacement is not None:
+                            current = replacement
+                            sample_index = 0
+                            started_at = time.monotonic()
+                            duration_sent = False
+                            current[1]()
+                    if not duration_sent and time.monotonic() - started_at >= current[0].time_s[-1]:
+                        current[2]()
+                        duration_sent = True
+                    chunk, sample_index = next_chunk(current[0], sample_index)
+                    writer.write_many_sample(chunk, timeout=2.0)
+                    last_sample = chunk[:, -1].copy()
+
+                ramp_samples = max(2, int(round(current[0].sample_rate_hz * self._safe_ramp_s)))
+                ramp = np.linspace(last_sample, np.zeros_like(last_sample), ramp_samples, axis=0).T
+                writer.write_many_sample(np.ascontiguousarray(ramp), timeout=2.0)
+                time.sleep(self._safe_ramp_s + 0.05)
             except Exception as exc:
                 error = str(exc)
             finally:
@@ -128,27 +179,39 @@ class NIDAQmxBackend(Backend):
                         task.stop()
                     finally:
                         task.close()
-                on_done(error or "stopped" if self._stop.is_set() else error)
+                if error:
+                    # A failed buffered task may retain its last AO value. Make
+                    # a best-effort on-demand zero write after releasing it.
+                    zero_task = None
+                    try:
+                        zero_task = nidaqmx.Task()
+                        names = ",".join(f"{self.device}/{c}" for c in self.channels)
+                        zero_task.ao_channels.add_ao_voltage_chan(
+                            names, min_val=-self.output_limit, max_val=self.output_limit
+                        )
+                        zero_task.write([0.0] * len(self.channels), auto_start=True)
+                    except Exception:
+                        pass
+                    finally:
+                        if zero_task is not None:
+                            zero_task.close()
+                current_done = current[3] if "current" in locals() else on_done
+                current_done(error or "stopped" if self._stop.is_set() else error)
 
-        threading.Thread(target=run, name="raft-control-nidaqmx", daemon=True).start()
+        self._thread = threading.Thread(target=run, name="raft-control-nidaqmx", daemon=True)
+        self._thread.start()
 
     def replace(self, waveform, on_started, on_duration, on_done):
-        # The first production implementation will replace the rolling buffer
-        # from the single DAQ worker. This method is intentionally explicit so
-        # tests and the controller cannot silently stop/start the task.
         with self._lock:
-            task = self._task
-        if task is None:
+            if self._task is None:
+                raise RuntimeError("no active NI-DAQmx task")
+            self._replacement = (waveform, on_started, on_duration, on_done)
+            self._replacement_event.set()
+        if self._task is None:
             raise RuntimeError("no active NI-DAQmx task")
-        task.write(waveform.clipped_currents_a, auto_start=False)
-        on_started()
 
     def stop(self):
         self._stop.set()
-        with self._lock:
-            task = self._task
-        if task is not None:
-            try:
-                task.stop()
-            except Exception:
-                pass
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(2.0, self._safe_ramp_s + 1.0))

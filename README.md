@@ -36,19 +36,32 @@ uv run python scripts/gui.py
 The GUI has two modes:
 
 ```powershell
-# Remote manual controller; the RaftControl server must already be running
+# Local manual controller owning the hardware (default)
 uv run python scripts/gui.py --mode controller
 
-# Manual controller owning the hardware directly in the GUI process
+# Equivalent explicit local form
 uv run python scripts/gui.py --mode controller --local
+
+# Remote manual controller; the RaftControl server must already be running
+uv run python scripts/gui.py --mode controller --remote
 
 # Read-only view of actions submitted by RL or another controller
 uv run python scripts/gui.py --mode viewer
 ```
 
-The GUI previews waveforms locally. Controller mode uses the TCP client unless
-`--local` is supplied. Press **Enable** before **Send action**. Viewer mode has
+The GUI previews waveforms locally. Controller mode owns the hardware directly
+unless `--remote` is supplied. Press **Enable** before **Send action**. Viewer mode has
 no enable, send, disable, or stop controls and polls recent server actions.
+When a new action appears, viewer mode reads its original request parameters
+from the server record and regenerates the plots locally. It does not render
+samples copied from the NI output buffer.
+
+Each submitted action receives a unique action ID. The GUI shows its short ID
+and lifecycle status (`queued`, `started`, `duration_elapsed`, `replaced`,
+`stopped`, or `failed`). A new action replaces the active action without
+recreating the NI-DAQmx task. After its duration elapses, the last action keeps
+running until another action replaces it or the operator presses **Stop** or
+**Disable**. Shutdown ramps all four outputs to zero over `safe_ramp_s`.
 
 ## Protocol
 
@@ -66,3 +79,8 @@ the two protocols are not intended to run simultaneously.
 uv sync
 uv run pytest
 ```
+
+Automated tests are dry: they use the simulation backend or a fake NI-DAQmx
+driver and never open `Dev1`. Unit tests live in `tests/unit_tests`; combined
+controller-flow tests live in `tests/integration_tests`. Physical coil testing
+is an explicit operator action performed through the GUI.

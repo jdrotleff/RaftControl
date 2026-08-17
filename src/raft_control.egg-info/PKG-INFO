@@ -5,3 +5,5 @@ Requires-Python: >=3.11
 Requires-Dist: numpy>=2.0
 Provides-Extra: hardware
 Requires-Dist: nidaqmx>=1.0.2; extra == "hardware"
+Provides-Extra: gui
+Requires-Dist: matplotlib>=3.8; extra == "gui"

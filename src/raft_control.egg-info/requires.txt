@@ -1,4 +1,7 @@
 numpy>=2.0
 
+[gui]
+matplotlib>=3.8
+
 [hardware]
 nidaqmx>=1.0.2
