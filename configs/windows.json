@@ -1,0 +1,19 @@
+{
+  "backend": "nidaqmx",
+  "daq_device": "Dev1",
+  "channels": ["ao0", "ao1", "ao2", "ao3"],
+  "sample_rate_hz": 10000.0,
+  "current_limit_a": 10.0,
+  "phase_x_deg": 0.0,
+  "phase_y_deg": 0.0,
+  "force_phase_x_deg": 0.0,
+  "force_phase_y_deg": 0.0,
+  "direction_x": 1.0,
+  "direction_y": 1.0,
+  "python_port": 6341,
+  "bind_address": "0.0.0.0",
+  "heartbeat_timeout_s": 5.0,
+  "safe_ramp_s": 0.05,
+  "log_path": "logs/raft_control.jsonl"
+}
+

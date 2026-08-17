@@ -1,0 +1,37 @@
+# RaftControl
+
+Standalone Windows field-control service for the NI USB-6363.
+
+RaftControl contains no RL, tracking, LabVIEW, or SwarmRL dependencies. It
+accepts canonical magnetic-field actions over a length-prefixed JSON TCP
+protocol and converts them into calibrated, safety-limited coil currents.
+
+The existing LabVIEW protocol remains in the Rafts/SwarmRL-MPI-IS repositories
+and is not modified by this project.
+
+## Windows setup
+
+Install Python, `uv`, and NI-DAQmx on Windows. From this repository:
+
+```powershell
+uv sync --extra hardware
+uv run python -m raft_control.server --config configs/windows.json
+```
+
+Confirm the NI device name and AO channels in NI MAX before enabling output.
+The service starts disabled. A client must explicitly send `enable` before any
+action can be accepted. Hardware testing must first use a disconnected load
+and a measured low-amplitude signal.
+
+## Protocol
+
+Each frame is a 4-byte unsigned big-endian payload length followed by UTF-8
+JSON. See `src/raft_control/server.py` for the request types. The controller
+generates action IDs; client request IDs are only correlation metadata.
+
+## Simulation tests
+
+```powershell
+uv sync
+uv run pytest
+```
