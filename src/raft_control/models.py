@@ -92,3 +92,22 @@ class ActionRecord:
             if hasattr(result[key], "tolist"):
                 result[key] = result[key].tolist()
         return result
+
+    def summary(self) -> dict[str, Any]:
+        """Compact wire-safe record; sampled arrays stay in the event log."""
+        return {
+            "action_id": self.action_id,
+            "request": self.request.as_dict(),
+            "status": self.status.value,
+            "backend": self.backend,
+            "channel_mapping": self.channel_mapping,
+            "calibration_version": self.calibration_version,
+            "clipped": self.clipped,
+            "min_currents_a": self.min_currents_a,
+            "max_currents_a": self.max_currents_a,
+            "timestamps": self.timestamps,
+            "error": self.error,
+            "tail_active": self.tail_active,
+            "duration_elapsed": self.duration_elapsed,
+            "replacement_action_id": self.replacement_action_id,
+        }

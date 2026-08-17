@@ -89,9 +89,9 @@ class RaftControlServer:
             return {"type": "ack", "request_id": request_id}
         if kind == "send":
             record = self.controller.send(request["action"])
-            return {"type": "action_ack", "request_id": request_id, "action": record.as_dict()}
+            return {"type": "action_ack", "request_id": request_id, "action": record.summary()}
         if kind == "status":
-            return {"type": "status", "request_id": request_id, "action": self.controller.status(request["action_id"]).as_dict()}
+            return {"type": "status", "request_id": request_id, "action": self.controller.status(request["action_id"]).summary()}
         if kind == "recent":
             with self.controller._lock:
                 records = list(self.controller._records.values())[-20:]
