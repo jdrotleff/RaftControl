@@ -38,6 +38,8 @@ def load_gui_config(path: Path) -> dict:
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=DEFAULT_GUI_CONFIG)
+    parser.add_argument("--mode", choices=("controller", "viewer"), default="controller")
+    parser.add_argument("--local", action="store_true", help="Controller mode: own the hardware controller in this GUI process")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     args = parser.parse_args(argv)
@@ -46,6 +48,9 @@ def main(argv: list[str] | None = None):
     port = args.port or gui_config["server_port"]
 
     preview_controller = FieldController(load_config(gui_config["preview_config"]))
+    local_controller = None
+    if args.local and args.mode == "controller":
+        local_controller = FieldController(load_config(ROOT / "configs" / "windows.json"))
     client: RaftControlClient | None = None
     enabled = False
     active_action_id: str | None = None
@@ -74,7 +79,7 @@ def main(argv: list[str] | None = None):
         entry.grid(row=0, column=index * 2 + 1, padx=3)
         entries[name] = entry
 
-    status = tk.StringVar(value=f"DISCONNECTED — target {host}:{port}")
+    status = tk.StringVar(value=f"{args.mode.upper()} — DISCONNECTED — target {host}:{port}")
     warning = tk.StringVar(value="No clipping")
     summary = tk.StringVar()
     ttk.Label(root, textvariable=status).pack()
@@ -125,8 +130,10 @@ def main(argv: list[str] | None = None):
         summary.set(f"Preview min: {np.min(data, axis=1).round(3).tolist()} A    max: {np.max(data, axis=1).round(3).tolist()} A")
         canvas.draw_idle()
 
-    def connect() -> bool:
+    def connect(show_error: bool = True) -> bool:
         nonlocal client
+        if local_controller is not None:
+            return True
         if client is not None:
             return True
         try:
@@ -136,12 +143,19 @@ def main(argv: list[str] | None = None):
             return True
         except Exception as exc:
             client = None
-            messagebox.showerror("Connection failed", str(exc))
+            if show_error:
+                messagebox.showerror("Connection failed", str(exc))
+            else:
+                status.set(f"{args.mode.upper()} — disconnected: {exc}")
             return False
 
     def enable_hardware():
         nonlocal enabled
-        if connect():
+        if local_controller is not None:
+            local_controller.enable()
+            enabled = True
+            status.set("CONTROLLER / ENABLED / LOCAL")
+        elif connect():
             try:
                 client.enable()
                 enabled = True
@@ -151,13 +165,15 @@ def main(argv: list[str] | None = None):
 
     def disable_hardware():
         nonlocal enabled
-        if client is not None:
+        if local_controller is not None:
+            local_controller.disable()
+        elif client is not None:
             try:
                 client.disable()
             except Exception as exc:
                 messagebox.showerror("Disable failed", str(exc))
         enabled = False
-        status.set(f"CONNECTED / DISABLED — {host}:{port}")
+        status.set("CONTROLLER / DISABLED / LOCAL" if local_controller is not None else f"CONNECTED / DISABLED — {host}:{port}")
 
     def send_action():
         nonlocal active_action_id
@@ -167,8 +183,8 @@ def main(argv: list[str] | None = None):
                 messagebox.showwarning("Hardware disabled", "Press Enable before sending an action.")
             return
         try:
-            response = client.send(action.as_dict())
-            record = response["action"]
+            response = local_controller.send(action) if local_controller is not None else client.send(action.as_dict())
+            record = response.as_dict() if local_controller is not None else response["action"]
             active_action_id = record["action_id"]
             status.set(f"ACTION {active_action_id[:8]} — {record['status']}")
             root.after(100, poll_status)
@@ -176,10 +192,10 @@ def main(argv: list[str] | None = None):
             messagebox.showerror("Send failed", str(exc))
 
     def poll_status():
-        if client is None or active_action_id is None:
+        if active_action_id is None or (client is None and local_controller is None):
             return
         try:
-            record = client.status(active_action_id)["action"]
+            record = local_controller.status(active_action_id).as_dict() if local_controller is not None else client.status(active_action_id)["action"]
             status.set(f"ACTION {active_action_id[:8]} — {record['status']}")
             if record["status"] in {"queued", "started", "duration_elapsed"}:
                 root.after(100, poll_status)
@@ -187,7 +203,10 @@ def main(argv: list[str] | None = None):
             status.set(f"STATUS ERROR — {exc}")
 
     def stop_hardware():
-        if client is not None:
+        if local_controller is not None:
+            local_controller.stop(active_action_id)
+            local_controller.disable()
+        elif client is not None:
             try:
                 client.stop(active_action_id)
                 client.disable()
@@ -197,19 +216,39 @@ def main(argv: list[str] | None = None):
 
     def on_close():
         try:
-            stop_hardware()
+            if args.mode == "controller":
+                stop_hardware()
         finally:
             if client is not None:
                 client.close()
+            if local_controller is not None:
+                local_controller.close()
             preview_controller.close()
             plt.close(figure)
             root.destroy()
 
     ttk.Button(buttons, text="Update preview", command=update_preview).pack(side="left", padx=4)
-    ttk.Button(buttons, text="Enable", command=enable_hardware).pack(side="left", padx=4)
-    ttk.Button(buttons, text="Disable", command=disable_hardware).pack(side="left", padx=4)
-    ttk.Button(buttons, text="Send action", command=send_action).pack(side="left", padx=4)
-    ttk.Button(buttons, text="Stop", command=stop_hardware).pack(side="left", padx=4)
+    if args.mode == "controller":
+        ttk.Button(buttons, text="Enable", command=enable_hardware).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Disable", command=disable_hardware).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Send action", command=send_action).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Stop", command=stop_hardware).pack(side="left", padx=4)
+    else:
+        ttk.Label(buttons, text="READ-ONLY VIEWER").pack(side="left", padx=12)
+
+        def refresh_viewer():
+            if connect(show_error=False):
+                try:
+                    records = client.recent()["actions"]
+                    if records:
+                        latest = records[-1]
+                        status.set(f"VIEWER — latest {latest['action_id'][:8]} — {latest['status']}")
+                        summary.set("RL actions: " + " | ".join(f"{r['action_id'][:8]}:{r['status']}" for r in records[-5:]))
+                except Exception as exc:
+                    status.set(f"VIEWER ERROR — {exc}")
+            root.after(250, refresh_viewer)
+
+        root.after(100, refresh_viewer)
     root.protocol("WM_DELETE_WINDOW", on_close)
     update_preview()
     root.mainloop()
@@ -217,4 +256,3 @@ def main(argv: list[str] | None = None):
 
 if __name__ == "__main__":
     main()
-

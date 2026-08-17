@@ -33,9 +33,22 @@ uv sync --extra hardware --extra gui
 uv run python scripts/gui.py
 ```
 
-The GUI previews waveforms locally and communicates with hardware only through
-the TCP client. Press **Enable** before **Send action**. **Stop** and closing
-the window stop and disable the remote controller.
+The GUI has two modes:
+
+```powershell
+# Remote manual controller; the RaftControl server must already be running
+uv run python scripts/gui.py --mode controller
+
+# Manual controller owning the hardware directly in the GUI process
+uv run python scripts/gui.py --mode controller --local
+
+# Read-only view of actions submitted by RL or another controller
+uv run python scripts/gui.py --mode viewer
+```
+
+The GUI previews waveforms locally. Controller mode uses the TCP client unless
+`--local` is supplied. Press **Enable** before **Send action**. Viewer mode has
+no enable, send, disable, or stop controls and polls recent server actions.
 
 ## Protocol
 

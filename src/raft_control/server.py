@@ -92,6 +92,10 @@ class RaftControlServer:
             return {"type": "action_ack", "request_id": request_id, "action": record.as_dict()}
         if kind == "status":
             return {"type": "status", "request_id": request_id, "action": self.controller.status(request["action_id"]).as_dict()}
+        if kind == "recent":
+            with self.controller._lock:
+                records = list(self.controller._records.values())[-20:]
+            return {"type": "recent", "request_id": request_id, "actions": [record.as_dict() for record in records]}
         if kind == "stop":
             self.controller.stop(request.get("action_id"))
             return {"type": "ack", "request_id": request_id}

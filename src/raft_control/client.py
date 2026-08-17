@@ -55,6 +55,9 @@ class RaftControlClient:
     def status(self, action_id: str) -> dict:
         return self.request({"type": "status", "action_id": action_id})
 
+    def recent(self) -> dict:
+        return self.request({"type": "recent"})
+
     def stop(self, action_id: str | None = None):
         message = {"type": "stop"}
         if action_id is not None:
