@@ -10,10 +10,9 @@
   "force_phase_y_deg": 0.0,
   "direction_x": 1.0,
   "direction_y": 1.0,
-  "python_port": 6341,
-  "bind_address": "0.0.0.0",
+  "python_port": 6340,
+  "bind_address": "134.105.56.173",
   "heartbeat_timeout_s": 5.0,
   "safe_ramp_s": 0.05,
   "log_path": "logs/raft_control.jsonl"
 }
-

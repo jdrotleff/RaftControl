@@ -29,6 +29,10 @@ Each frame is a 4-byte unsigned big-endian payload length followed by UTF-8
 JSON. See `src/raft_control/server.py` for the request types. The controller
 generates action IDs; client request IDs are only correlation metadata.
 
+RaftControl uses TCP port 6340 by default, matching the existing Rafts
+configuration. The LabVIEW process must be stopped before RaftControl starts;
+the two protocols are not intended to run simultaneously.
+
 ## Simulation tests
 
 ```powershell

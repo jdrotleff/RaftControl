@@ -25,7 +25,7 @@ class ControllerConfig:
     force_phase_y_deg: float = 0.0
     direction_x: float = 1.0
     direction_y: float = 1.0
-    python_port: int = 6341
+    python_port: int = 6340
     bind_address: str = "127.0.0.1"
     heartbeat_timeout_s: float = 5.0
     safe_ramp_s: float = 0.05
@@ -48,4 +48,3 @@ def load_config(path: str | Path) -> ControllerConfig:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     data.pop("calibration_path", None)
     return ControllerConfig(**data)
-

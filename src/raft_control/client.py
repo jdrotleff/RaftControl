@@ -10,7 +10,7 @@ from .protocol import FrameDecoder, encode_message
 class RaftControlClient:
     """Small dependency-free client usable from Rafts/Linux or another caller."""
 
-    def __init__(self, host: str, port: int = 6341, timeout: float = 5.0):
+    def __init__(self, host: str, port: int = 6340, timeout: float = 5.0):
         self.host, self.port, self.timeout = host, port, timeout
         self.socket: socket.socket | None = None
         self.decoder = FrameDecoder()
@@ -60,4 +60,3 @@ class RaftControlClient:
         if action_id is not None:
             message["action_id"] = action_id
         return self.request(message)
-
