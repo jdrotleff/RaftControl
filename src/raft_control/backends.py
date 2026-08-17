@@ -126,7 +126,12 @@ class NIDAQmxBackend(Backend):
                     sample_mode=acquisition.CONTINUOUS,
                     samps_per_chan=buffer_samples,
                 )
-                task.out_stream.regen_mode = regeneration.DONT_ALLOW_REGENERATION
+                # The active action is periodic and intentionally remains live
+                # after its duration. Allow NI to repeat buffered samples during
+                # a short Windows/USB scheduling delay instead of aborting the
+                # task with DAQmx -200290. The writer still replaces chunks as
+                # soon as buffer space is available.
+                task.out_stream.regen_mode = regeneration.ALLOW_REGENERATION
                 writer = writer_type(task.out_stream, auto_start=False)
                 with self._lock:
                     self._task = task
@@ -177,8 +182,14 @@ class NIDAQmxBackend(Backend):
                 if task is not None:
                     try:
                         task.stop()
-                    finally:
+                    except Exception as exc:
+                        if error is None and not self._stop.is_set():
+                            error = str(exc)
+                    try:
                         task.close()
+                    except Exception as exc:
+                        if error is None:
+                            error = str(exc)
                 if error:
                     # A failed buffered task may retain its last AO value. Make
                     # a best-effort on-demand zero write after releasing it.
@@ -194,9 +205,17 @@ class NIDAQmxBackend(Backend):
                         pass
                     finally:
                         if zero_task is not None:
-                            zero_task.close()
+                            try:
+                                zero_task.close()
+                            except Exception:
+                                pass
                 current_done = current[3] if "current" in locals() else on_done
-                current_done(error or "stopped" if self._stop.is_set() else error)
+                try:
+                    current_done(error or "stopped" if self._stop.is_set() else error)
+                except Exception:
+                    # A callback must not prevent the DAQ worker from finishing
+                    # and becoming restartable.
+                    pass
 
         self._thread = threading.Thread(target=run, name="raft-control-nidaqmx", daemon=True)
         self._thread.start()

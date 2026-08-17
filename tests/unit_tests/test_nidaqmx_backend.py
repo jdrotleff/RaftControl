@@ -59,8 +59,28 @@ class DryBackend(NIDAQmxBackend):
     def _import(self):
         driver = type("Driver", (), {"Task": FakeTask})
         acquisition = type("Acquisition", (), {"CONTINUOUS": "continuous"})
-        regeneration = type("Regeneration", (), {"DONT_ALLOW_REGENERATION": "disabled"})
+        regeneration = type(
+            "Regeneration",
+            (),
+            {"ALLOW_REGENERATION": "allowed", "DONT_ALLOW_REGENERATION": "disabled"},
+        )
         return driver, acquisition, regeneration, FakeWriter
+
+
+class FlakyWriter(FakeWriter):
+    fail_next = True
+
+    def write_many_sample(self, values, timeout=None):
+        if type(self).fail_next:
+            type(self).fail_next = False
+            raise RuntimeError("simulated DAQ write failure")
+        super().write_many_sample(values, timeout)
+
+
+class DryFlakyBackend(DryBackend):
+    def _import(self):
+        driver, acquisition, regeneration, _ = super()._import()
+        return driver, acquisition, regeneration, FlakyWriter
 
 
 def waveform(value):
@@ -92,5 +112,24 @@ def test_one_task_streams_replacement_and_ramps_to_zero():
 
     assert len(FakeTask.instances) == 1
     assert FakeTask.instances[0].closed
+    assert FakeTask.instances[0].out_stream.regen_mode == "allowed"
     assert any(np.all(values == 2) for values in FakeWriter.writes)
     np.testing.assert_allclose(FakeWriter.writes[-1][:, -1], 0)
+
+
+def test_failed_worker_reports_error_and_can_start_fresh_task():
+    FakeTask.instances.clear()
+    FlakyWriter.fail_next = True
+    backend = DryFlakyBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005)
+    failed = threading.Event()
+    errors = []
+
+    backend.start(waveform(1), lambda: None, lambda: None, lambda error: (errors.append(error), failed.set()))
+    assert failed.wait(1)
+    assert "simulated DAQ write failure" in errors[0]
+
+    restarted = threading.Event()
+    backend.start(waveform(1), restarted.set, lambda: None, lambda error: None)
+    assert restarted.wait(1)
+    backend.stop()
+    assert len(FakeTask.instances) >= 2
