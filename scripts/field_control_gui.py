@@ -231,6 +231,14 @@ def main(argv: list[str] | None = None):
                 messagebox.showerror("Stop failed", str(exc))
         status.set("STOPPED / DISABLED")
 
+    def keep_remote_controller_alive():
+        if args.mode == "controller" and local_controller is None and client is not None:
+            try:
+                client.heartbeat()
+            except Exception as exc:
+                status.set(f"HEARTBEAT ERROR — {exc}")
+        root.after(1000, keep_remote_controller_alive)
+
     def on_close():
         try:
             if args.mode == "controller":
@@ -286,6 +294,7 @@ def main(argv: list[str] | None = None):
 
         root.after(100, refresh_viewer)
     root.protocol("WM_DELETE_WINDOW", on_close)
+    root.after(1000, keep_remote_controller_alive)
     update_preview()
     root.mainloop()
 

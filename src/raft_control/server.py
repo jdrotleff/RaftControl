@@ -42,8 +42,7 @@ class RaftControlServer:
 
     def _client(self, conn):
         decoder = FrameDecoder()
-        with self._client_lock:
-            self._last_heartbeat = time.monotonic()
+        controls_hardware = False
         try:
             with conn:
                 while not self._stop.is_set():
@@ -51,16 +50,20 @@ class RaftControlServer:
                     if not data:
                         return
                     for request in decoder.feed(data):
+                        if request.get("type") in {"enable", "disable", "send", "stop", "heartbeat"}:
+                            controls_hardware = True
                         try:
                             response = self._dispatch(request)
                         except Exception as exc:
                             response = {"type": "error", "request_id": request.get("request_id"), "error": str(exc)}
                         conn.sendall(encode_message(response))
         finally:
-            with self._client_lock:
-                self._last_heartbeat = None
-            self.controller.stop()
-            self.controller.disable()
+            # A read-only viewer must never stop the experiment when it exits.
+            if controls_hardware:
+                with self._client_lock:
+                    self._last_heartbeat = None
+                self.controller.stop()
+                self.controller.disable()
 
     def _watchdog(self):
         while not self._stop.wait(0.25):
@@ -82,6 +85,8 @@ class RaftControlServer:
                 self._last_heartbeat = time.monotonic()
             return {"type": "heartbeat_ack", "request_id": request_id}
         if kind == "enable":
+            with self._client_lock:
+                self._last_heartbeat = time.monotonic()
             self.controller.enable()
             return {"type": "ack", "request_id": request_id}
         if kind == "disable":
@@ -95,7 +100,13 @@ class RaftControlServer:
         if kind == "recent":
             with self.controller._lock:
                 records = list(self.controller._records.values())[-20:]
-            return {"type": "recent", "request_id": request_id, "actions": [record.as_dict() for record in records]}
+            actions = []
+            for record in records:
+                item = record.as_dict()
+                item.pop("calculated_currents_a", None)
+                item.pop("transmitted_currents_a", None)
+                actions.append(item)
+            return {"type": "recent", "request_id": request_id, "actions": actions}
         if kind == "stop":
             self.controller.stop(request.get("action_id"))
             return {"type": "ack", "request_id": request_id}
