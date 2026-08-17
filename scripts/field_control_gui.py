@@ -1,0 +1,220 @@
+"""Manual RaftControl client and waveform-preview GUI.
+
+The GUI performs previews locally through the simulation backend. Hardware
+commands go only through the public RaftControl TCP client API.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import tkinter as tk
+from pathlib import Path
+from tkinter import messagebox, ttk
+
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+from raft_control import FieldController, RaftControlClient
+from raft_control.config import load_config
+from raft_control.models import ActionRequest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_GUI_CONFIG = ROOT / "configs" / "gui.json"
+
+
+def load_gui_config(path: Path) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        "server_host": str(data.get("server_host", "134.105.56.173")),
+        "server_port": int(data.get("server_port", 6340)),
+        "preview_config": ROOT / data.get("preview_config", "configs/simulation.json"),
+    }
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=DEFAULT_GUI_CONFIG)
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
+    args = parser.parse_args(argv)
+    gui_config = load_gui_config(args.config)
+    host = args.host or gui_config["server_host"]
+    port = args.port or gui_config["server_port"]
+
+    preview_controller = FieldController(load_config(gui_config["preview_config"]))
+    client: RaftControlClient | None = None
+    enabled = False
+    active_action_id: str | None = None
+
+    root = tk.Tk()
+    root.title("RaftControl — Manual Field Control")
+    root.geometry("1100x780")
+
+    fields = ["bx", "by", "fx", "fy", "FX", "FY", "duration"]
+    labels = {
+        "bx": "B_x (G)", "by": "B_y (G)", "fx": "f_x (Hz)",
+        "fy": "f_y (Hz)", "FX": "grad_X B (G/mm)",
+        "FY": "grad_Y B (G/mm)", "duration": "Duration (s)",
+    }
+    defaults = ["1", "1", "1", "1", "0", "0", "1"]
+    entries: dict[str, ttk.Entry] = {}
+
+    buttons = ttk.Frame(root, padding=8)
+    buttons.pack(side="top", fill="x")
+    controls = ttk.Frame(root, padding=8)
+    controls.pack(side="top", fill="x")
+    for index, (name, default) in enumerate(zip(fields, defaults)):
+        ttk.Label(controls, text=labels[name]).grid(row=0, column=index * 2, sticky="w")
+        entry = ttk.Entry(controls, width=9)
+        entry.insert(0, default)
+        entry.grid(row=0, column=index * 2 + 1, padx=3)
+        entries[name] = entry
+
+    status = tk.StringVar(value=f"DISCONNECTED — target {host}:{port}")
+    warning = tk.StringVar(value="No clipping")
+    summary = tk.StringVar()
+    ttk.Label(root, textvariable=status).pack()
+    warning_label = ttk.Label(root, textvariable=warning, padding=4)
+    warning_label.pack()
+    ttk.Label(root, textvariable=summary).pack()
+
+    figure, axes = plt.subplots(2, 1, figsize=(10, 7), constrained_layout=True)
+    canvas = FigureCanvasTkAgg(figure, master=root)
+    canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    def get_action() -> ActionRequest | None:
+        try:
+            return ActionRequest(**{name: float(entry.get() or 0.0) for name, entry in entries.items()})
+        except ValueError as exc:
+            messagebox.showerror("Invalid action", str(exc))
+            return None
+
+    def update_preview():
+        action = get_action()
+        if action is None:
+            return
+        try:
+            result = preview_controller.preview(action)
+        except Exception as exc:
+            messagebox.showerror("Preview failed", str(exc))
+            return
+        axes[0].clear()
+        axes[1].clear()
+        colors = ["#962428", "#ff4242", "#0eaa00", "#42aee8"]
+        for index, current in enumerate(result.waveform.clipped_currents_a):
+            axes[0].plot(result.waveform.time_s, current, color=colors[index], label=f"Coil {index + 1}")
+        axes[0].set_title("Predicted coil currents")
+        axes[0].set_xlabel("Time (s)")
+        axes[0].set_ylabel("Current (A)")
+        for index, gradient in enumerate(result.waveform.requested_components[2:4]):
+            axes[1].plot(result.waveform.time_s, gradient, color=colors[index], label=["grad_X B", "grad_Y B"][index])
+        axes[1].set_title("Requested magnetic-field gradients")
+        axes[1].set_xlabel("Time (s)")
+        axes[1].set_ylabel("Gradient (G/mm)")
+        for axis in axes:
+            axis.legend()
+            axis.grid(True)
+        clipped = bool(result.waveform.clipped.any())
+        warning.set("⚠ CURRENT CLIPPED ⚠" if clipped else "No clipping")
+        warning_label.configure(background="#75b9ff" if clipped else root.cget("background"))
+        data = result.waveform.clipped_currents_a
+        summary.set(f"Preview min: {np.min(data, axis=1).round(3).tolist()} A    max: {np.max(data, axis=1).round(3).tolist()} A")
+        canvas.draw_idle()
+
+    def connect() -> bool:
+        nonlocal client
+        if client is not None:
+            return True
+        try:
+            client = RaftControlClient(host, port)
+            client.connect()
+            status.set(f"CONNECTED / DISABLED — {host}:{port}")
+            return True
+        except Exception as exc:
+            client = None
+            messagebox.showerror("Connection failed", str(exc))
+            return False
+
+    def enable_hardware():
+        nonlocal enabled
+        if connect():
+            try:
+                client.enable()
+                enabled = True
+                status.set(f"CONNECTED / ENABLED — {host}:{port}")
+            except Exception as exc:
+                messagebox.showerror("Enable failed", str(exc))
+
+    def disable_hardware():
+        nonlocal enabled
+        if client is not None:
+            try:
+                client.disable()
+            except Exception as exc:
+                messagebox.showerror("Disable failed", str(exc))
+        enabled = False
+        status.set(f"CONNECTED / DISABLED — {host}:{port}")
+
+    def send_action():
+        nonlocal active_action_id
+        action = get_action()
+        if action is None or not enabled or not connect():
+            if not enabled:
+                messagebox.showwarning("Hardware disabled", "Press Enable before sending an action.")
+            return
+        try:
+            response = client.send(action.as_dict())
+            record = response["action"]
+            active_action_id = record["action_id"]
+            status.set(f"ACTION {active_action_id[:8]} — {record['status']}")
+            root.after(100, poll_status)
+        except Exception as exc:
+            messagebox.showerror("Send failed", str(exc))
+
+    def poll_status():
+        if client is None or active_action_id is None:
+            return
+        try:
+            record = client.status(active_action_id)["action"]
+            status.set(f"ACTION {active_action_id[:8]} — {record['status']}")
+            if record["status"] in {"queued", "started", "duration_elapsed"}:
+                root.after(100, poll_status)
+        except Exception as exc:
+            status.set(f"STATUS ERROR — {exc}")
+
+    def stop_hardware():
+        if client is not None:
+            try:
+                client.stop(active_action_id)
+                client.disable()
+            except Exception as exc:
+                messagebox.showerror("Stop failed", str(exc))
+        status.set("STOPPED / DISABLED")
+
+    def on_close():
+        try:
+            stop_hardware()
+        finally:
+            if client is not None:
+                client.close()
+            preview_controller.close()
+            plt.close(figure)
+            root.destroy()
+
+    ttk.Button(buttons, text="Update preview", command=update_preview).pack(side="left", padx=4)
+    ttk.Button(buttons, text="Enable", command=enable_hardware).pack(side="left", padx=4)
+    ttk.Button(buttons, text="Disable", command=disable_hardware).pack(side="left", padx=4)
+    ttk.Button(buttons, text="Send action", command=send_action).pack(side="left", padx=4)
+    ttk.Button(buttons, text="Stop", command=stop_hardware).pack(side="left", padx=4)
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    update_preview()
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
+

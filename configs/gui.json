@@ -1,0 +1,6 @@
+{
+  "server_host": "134.105.56.173",
+  "server_port": 6340,
+  "preview_config": "configs/simulation.json"
+}
+
