@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None):
         "fy": "f_y (Hz)", "FX": "grad_X B (G/mm)",
         "FY": "grad_Y B (G/mm)", "duration": "Duration (s)",
     }
-    defaults = ["1", "1", "1", "1", "0", "0", "1"]
+    defaults = ["50", "50", "25", "25", "0", "0", "3"]
     entries: dict[str, ttk.Entry] = {}
 
     buttons = ttk.Frame(root, padding=8)
