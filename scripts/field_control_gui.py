@@ -115,8 +115,8 @@ def main(argv: list[str] | None = None):
             messagebox.showerror("Invalid action", str(exc))
             return None
 
-    def update_preview():
-        action = get_action()
+    def update_preview(action: ActionRequest | None = None):
+        action = action or get_action()
         if action is None:
             return
         try:
@@ -195,7 +195,10 @@ def main(argv: list[str] | None = None):
     def send_action():
         nonlocal active_action_id
         action = get_action()
-        if action is None or not enabled or not connect():
+        if action is None:
+            return
+        update_preview(action)
+        if not enabled or not connect():
             if not enabled:
                 messagebox.showwarning("Hardware disabled", "Press Enable before sending an action.")
             return

@@ -112,7 +112,8 @@ def test_one_task_streams_replacement_and_ramps_to_zero():
 
     assert len(FakeTask.instances) == 1
     assert FakeTask.instances[0].closed
-    assert FakeTask.instances[0].out_stream.regen_mode == "allowed"
+    assert FakeTask.instances[0].out_stream.regen_mode == "disabled"
+    assert FakeWriter.writes[0].shape == (4, 40)
     assert any(np.all(values == 2) for values in FakeWriter.writes)
     np.testing.assert_allclose(FakeWriter.writes[-1][:, -1], 0)
 

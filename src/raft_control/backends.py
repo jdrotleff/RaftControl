@@ -126,12 +126,10 @@ class NIDAQmxBackend(Backend):
                     sample_mode=acquisition.CONTINUOUS,
                     samps_per_chan=buffer_samples,
                 )
-                # The active action is periodic and intentionally remains live
-                # after its duration. Allow NI to repeat buffered samples during
-                # a short Windows/USB scheduling delay instead of aborting the
-                # task with DAQmx -200290. The writer still replaces chunks as
-                # soon as buffer space is available.
-                task.out_stream.regen_mode = regeneration.ALLOW_REGENERATION
+                # Stream only into space the device has finished consuming.
+                # Rewriting a regenerating buffer can make the device alternate
+                # between old and new samples and raises DAQmx warning 200015.
+                task.out_stream.regen_mode = regeneration.DONT_ALLOW_REGENERATION
                 writer = writer_type(task.out_stream, auto_start=False)
                 with self._lock:
                     self._task = task
@@ -144,7 +142,13 @@ class NIDAQmxBackend(Backend):
                     indices = (np.arange(chunk_samples) + index) % values.shape[1]
                     return np.ascontiguousarray(values[:, indices]), (index + chunk_samples) % values.shape[1]
 
-                initial, sample_index = next_chunk(waveform, sample_index)
+                # Fill the complete output buffer before starting. This gives
+                # the worker 40 ms of scheduling headroom without regeneration.
+                initial_parts = []
+                for _ in range(buffer_samples // chunk_samples):
+                    part, sample_index = next_chunk(waveform, sample_index)
+                    initial_parts.append(part)
+                initial = np.ascontiguousarray(np.concatenate(initial_parts, axis=1))
                 writer.write_many_sample(initial, timeout=2.0)
                 last_sample = initial[:, -1].copy()
                 task.start()
