@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 import tkinter as tk
 import tkinter.font as tkfont
@@ -60,11 +61,18 @@ def main(argv: list[str] | None = None):
         action="store_true",
         help="Controller mode: queue actions until the active action duration elapses",
     )
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="Controller mode: show a button for generating random field actions",
+    )
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     args = parser.parse_args(argv)
     if args.queue and args.mode != "controller":
         parser.error("--queue is only available in controller mode")
+    if args.shuffle and args.mode != "controller":
+        parser.error("--shuffle is only available in controller mode")
     gui_config = load_gui_config(args.config)
     host = args.host or gui_config["server_host"]
     port = args.port or gui_config["server_port"]
@@ -156,6 +164,20 @@ def main(argv: list[str] | None = None):
         data = result.waveform.clipped_currents_a
         summary.set(f"Preview min: {np.min(data, axis=1).round(3).tolist()} A    max: {np.max(data, axis=1).round(3).tolist()} A")
         canvas.draw_idle()
+
+    def shuffle_and_send_action():
+        values = {
+            "bx": random.uniform(0.0, 80.0),
+            "by": random.uniform(0.0, 80.0),
+            "fx": random.uniform(0.0, 60.0),
+            "fy": random.uniform(0.0, 60.0),
+            "FX": 0.0,
+            "FY": 0.0,
+        }
+        for name, value in values.items():
+            entries[name].delete(0, tk.END)
+            entries[name].insert(0, f"{value:.3f}")
+        send_action()
 
     def connect(show_error: bool = True) -> bool:
         nonlocal client
@@ -289,6 +311,8 @@ def main(argv: list[str] | None = None):
 
     ttk.Button(buttons, text="Update preview", command=update_preview).pack(side="left", padx=4)
     if args.mode == "controller":
+        if args.shuffle:
+            ttk.Button(buttons, text="Shuffle and send", command=shuffle_and_send_action).pack(side="left", padx=4)
         ttk.Button(buttons, text="Enable", command=enable_hardware).pack(side="left", padx=4)
         ttk.Button(buttons, text="Disable", command=disable_hardware).pack(side="left", padx=4)
         ttk.Button(buttons, text="Send action", command=send_action).pack(side="left", padx=4)

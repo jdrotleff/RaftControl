@@ -45,6 +45,9 @@ uv run python scripts/gui.py --mode controller --local
 # Local controller that queues actions and runs them sequentially
 uv run python scripts/gui.py --mode controller --queue
 
+# Show a button that generates random field/frequency parameters
+uv run python scripts/gui.py --mode controller --shuffle
+
 # Remote manual controller; the RaftControl server must already be running
 uv run python scripts/gui.py --mode controller --remote
 
@@ -71,6 +74,12 @@ GUI stores subsequent actions locally and submits the next one when the active
 action reaches `duration_elapsed`. **Stop** and **Disable** clear that pending
 queue. Queue mode works with both `--local` and `--remote`; its queue belongs to
 the GUI process and is not persisted by the server.
+
+With `--shuffle`, the GUI shows a **Shuffle and send** button. It independently
+samples `bx` and `by` from 0–80 G and `fx` and `fy` from 0–60 Hz, sets both
+gradients to zero, preserves the current duration, updates the preview, and
+immediately sends or queues the generated action through the normal controller
+flow.
 
 ## Protocol
 
