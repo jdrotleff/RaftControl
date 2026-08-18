@@ -11,6 +11,7 @@ import json
 import sys
 import tkinter as tk
 import tkinter.font as tkfont
+from collections import deque
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -54,9 +55,16 @@ def main(argv: list[str] | None = None):
         help="Controller mode: connect to a separately running RaftControl server",
     )
     parser.set_defaults(local=True)
+    parser.add_argument(
+        "--queue",
+        action="store_true",
+        help="Controller mode: queue actions until the active action duration elapses",
+    )
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     args = parser.parse_args(argv)
+    if args.queue and args.mode != "controller":
+        parser.error("--queue is only available in controller mode")
     gui_config = load_gui_config(args.config)
     host = args.host or gui_config["server_host"]
     port = args.port or gui_config["server_port"]
@@ -68,6 +76,8 @@ def main(argv: list[str] | None = None):
     client: RaftControlClient | None = None
     enabled = False
     active_action_id: str | None = None
+    active_action_status: str | None = None
+    queued_actions: deque[ActionRequest] = deque()
     viewed_action_id: str | None = None
 
     root = tk.Tk()
@@ -181,7 +191,8 @@ def main(argv: list[str] | None = None):
                 messagebox.showerror("Enable failed", str(exc))
 
     def disable_hardware():
-        nonlocal enabled
+        nonlocal enabled, active_action_id, active_action_status
+        queued_actions.clear()
         if local_controller is not None:
             local_controller.disable()
         elif client is not None:
@@ -190,10 +201,24 @@ def main(argv: list[str] | None = None):
             except Exception as exc:
                 messagebox.showerror("Disable failed", str(exc))
         enabled = False
+        active_action_id = None
+        active_action_status = None
         status.set("CONTROLLER / DISABLED / LOCAL" if local_controller is not None else f"CONNECTED / DISABLED — {host}:{port}")
 
+    def transmit_action(action: ActionRequest):
+        nonlocal active_action_id, active_action_status
+        try:
+            response = local_controller.send(action) if local_controller is not None else client.send(action.as_dict())
+            record = response.as_dict() if local_controller is not None else response["action"]
+            active_action_id = record["action_id"]
+            active_action_status = record["status"]
+            status.set(f"ACTION {active_action_id[:8]} — {record['status']}")
+            if active_action_status in {"queued", "started"}:
+                root.after(100, lambda action_id=active_action_id: poll_status(action_id))
+        except Exception as exc:
+            messagebox.showerror("Send failed", str(exc))
+
     def send_action():
-        nonlocal active_action_id
         action = get_action()
         if action is None:
             return
@@ -202,27 +227,31 @@ def main(argv: list[str] | None = None):
             if not enabled:
                 messagebox.showwarning("Hardware disabled", "Press Enable before sending an action.")
             return
-        try:
-            response = local_controller.send(action) if local_controller is not None else client.send(action.as_dict())
-            record = response.as_dict() if local_controller is not None else response["action"]
-            active_action_id = record["action_id"]
-            status.set(f"ACTION {active_action_id[:8]} — {record['status']}")
-            root.after(100, poll_status)
-        except Exception as exc:
-            messagebox.showerror("Send failed", str(exc))
+        if args.queue and active_action_status in {"queued", "started"}:
+            queued_actions.append(action)
+            active = active_action_id[:8] if active_action_id else "none"
+            status.set(f"QUEUED LOCALLY ({len(queued_actions)}) - active {active}")
+            return
+        transmit_action(action)
 
-    def poll_status():
-        if active_action_id is None or (client is None and local_controller is None):
+    def poll_status(action_id: str):
+        nonlocal active_action_status
+        if action_id != active_action_id or (client is None and local_controller is None):
             return
         try:
-            record = local_controller.status(active_action_id).as_dict() if local_controller is not None else client.status(active_action_id)["action"]
+            record = local_controller.status(action_id).as_dict() if local_controller is not None else client.status(action_id)["action"]
+            active_action_status = record["status"]
             status.set(f"ACTION {active_action_id[:8]} — {record['status']}")
-            if record["status"] in {"queued", "started", "duration_elapsed"}:
-                root.after(100, poll_status)
+            if active_action_status in {"queued", "started"}:
+                root.after(100, lambda: poll_status(action_id))
+            elif active_action_status == "duration_elapsed" and args.queue and queued_actions:
+                transmit_action(queued_actions.popleft())
         except Exception as exc:
             status.set(f"STATUS ERROR — {exc}")
 
     def stop_hardware():
+        nonlocal active_action_id, active_action_status, enabled
+        queued_actions.clear()
         if local_controller is not None:
             local_controller.stop(active_action_id)
             local_controller.disable()
@@ -232,6 +261,9 @@ def main(argv: list[str] | None = None):
                 client.disable()
             except Exception as exc:
                 messagebox.showerror("Stop failed", str(exc))
+        active_action_id = None
+        active_action_status = None
+        enabled = False
         status.set("STOPPED / DISABLED")
 
     def keep_remote_controller_alive():
@@ -266,6 +298,9 @@ def main(argv: list[str] | None = None):
             if local_controller is not None
             else "Remote controller — actions can be interrupted immediately"
         )
+        if args.queue:
+            location = "Local" if local_controller is not None else "Remote"
+            mode_note = f"{location} controller - actions run sequentially"
         ttk.Label(buttons, text=mode_note, font=mode_note_font).pack(side="left", padx=10)
     else:
         ttk.Label(buttons, text="READ-ONLY VIEWER").pack(side="left", padx=12)

@@ -42,6 +42,9 @@ uv run python scripts/gui.py --mode controller
 # Equivalent explicit local form
 uv run python scripts/gui.py --mode controller --local
 
+# Local controller that queues actions and runs them sequentially
+uv run python scripts/gui.py --mode controller --queue
+
 # Remote manual controller; the RaftControl server must already be running
 uv run python scripts/gui.py --mode controller --remote
 
@@ -62,6 +65,12 @@ and lifecycle status (`queued`, `started`, `duration_elapsed`, `replaced`,
 recreating the NI-DAQmx task. After its duration elapses, the last action keeps
 running until another action replaces it or the operator presses **Stop** or
 **Disable**. Shutdown ramps all four outputs to zero over `safe_ramp_s`.
+
+Controller mode overwrites the active action by default. With `--queue`, the
+GUI stores subsequent actions locally and submits the next one when the active
+action reaches `duration_elapsed`. **Stop** and **Disable** clear that pending
+queue. Queue mode works with both `--local` and `--remote`; its queue belongs to
+the GUI process and is not persisted by the server.
 
 ## Protocol
 
