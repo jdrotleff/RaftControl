@@ -14,6 +14,9 @@ class FakeChannels:
     def add_ao_voltage_chan(self, *args, **kwargs):
         self.calls.append((args, kwargs))
 
+    def add_do_chan(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+
 
 class FakeTiming:
     def __init__(self):
@@ -28,11 +31,16 @@ class FakeTask:
 
     def __init__(self):
         self.ao_channels = FakeChannels()
+        self.do_channels = FakeChannels()
         self.timing = FakeTiming()
         self.out_stream = type("Stream", (), {"regen_mode": None})()
         self.started = False
         self.closed = False
+        self.scalar_writes = []
         FakeTask.instances.append(self)
+
+    def write(self, value, auto_start=False):
+        self.scalar_writes.append((value, auto_start))
 
     def start(self):
         self.started = True
@@ -116,6 +124,32 @@ def test_one_task_streams_replacement_and_ramps_to_zero():
     assert FakeWriter.writes[0].shape == (4, 40)
     assert any(np.all(values == 2) for values in FakeWriter.writes)
     np.testing.assert_allclose(FakeWriter.writes[-1][:, -1], 0)
+
+
+def test_amplifier_enable_line_is_safe_low_then_tracks_lifecycle():
+    FakeTask.instances.clear()
+    backend = DryBackend(
+        ["ao0", "ao1", "ao2", "ao3"],
+        "Dev1",
+        amplifier_enable_line="port0/line0",
+    )
+
+    backend.initialize()
+    enable_task = FakeTask.instances[0]
+    assert enable_task.do_channels.calls == [(("Dev1/port0/line0",), {})]
+    assert enable_task.scalar_writes == [(False, True)]
+
+    backend.enable()
+    backend.disable()
+    backend.close()
+
+    assert enable_task.scalar_writes == [
+        (False, True),
+        (True, True),
+        (False, True),
+        (False, True),
+    ]
+    assert enable_task.closed
 
 
 def test_failed_worker_reports_error_and_can_start_fresh_task():

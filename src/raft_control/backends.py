@@ -9,6 +9,15 @@ import numpy as np
 class Backend:
     name = "backend"
 
+    def initialize(self) -> None:
+        pass
+
+    def enable(self) -> None:
+        pass
+
+    def disable(self) -> None:
+        pass
+
     def start(self, waveform, on_started: Callable[[], None], on_duration: Callable[[], None], on_done: Callable[[str | None], None]) -> None:
         raise NotImplementedError
 
@@ -84,9 +93,18 @@ class NIDAQmxBackend(Backend):
 
     name = "nidaqmx"
 
-    def __init__(self, channels, device, output_limit=10.0, safe_ramp_s=0.05):
+    def __init__(
+        self,
+        channels,
+        device,
+        output_limit=10.0,
+        safe_ramp_s=0.05,
+        amplifier_enable_line=None,
+    ):
         self.channels, self.device = channels, device
         self.output_limit = output_limit
+        self.amplifier_enable_line = amplifier_enable_line
+        self._enable_task = None
         self._task = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -103,6 +121,36 @@ class NIDAQmxBackend(Backend):
             return nidaqmx, AcquisitionType, RegenerationMode, AnalogMultiChannelWriter
         except ImportError as exc:
             raise RuntimeError("install the RaftControl hardware extra on Windows") from exc
+
+    def initialize(self):
+        """Own the amplifier-enable line and put it in LabVIEW's safe-low state."""
+        if self.amplifier_enable_line is None:
+            return
+        with self._lock:
+            if self._enable_task is not None:
+                return
+            nidaqmx, _, _, _ = self._import()
+            task = nidaqmx.Task()
+            try:
+                task.do_channels.add_do_chan(
+                    f"{self.device}/{self.amplifier_enable_line}"
+                )
+                task.write(False, auto_start=True)
+            except Exception:
+                task.close()
+                raise
+            self._enable_task = task
+
+    def enable(self):
+        self.initialize()
+        with self._lock:
+            if self._enable_task is not None:
+                self._enable_task.write(True, auto_start=True)
+
+    def disable(self):
+        with self._lock:
+            if self._enable_task is not None:
+                self._enable_task.write(False, auto_start=True)
 
     def start(self, waveform, on_started, on_duration, on_done):
         if self._thread is not None and self._thread.is_alive():
@@ -238,3 +286,15 @@ class NIDAQmxBackend(Backend):
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=max(2.0, self._safe_ramp_s + 1.0))
+
+    def close(self):
+        self.stop()
+        with self._lock:
+            task = self._enable_task
+            if task is None:
+                return
+            try:
+                task.write(False, auto_start=True)
+            finally:
+                task.close()
+                self._enable_task = None

@@ -2,6 +2,7 @@
   "backend": "nidaqmx",
   "daq_device": "Dev1",
   "channels": ["ao0", "ao1", "ao2", "ao3"],
+  "amplifier_enable_line": "port0/line0",
   "sample_rate_hz": 10000.0,
   "current_limit_a": 10.0,
   "phase_x_deg": 0.0,

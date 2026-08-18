@@ -17,6 +17,7 @@ class ControllerConfig:
     backend: str = "simulation"
     daq_device: str = "Dev1"
     channels: list[str] = field(default_factory=lambda: ["ao0", "ao1", "ao2", "ao3"])
+    amplifier_enable_line: str | None = None
     sample_rate_hz: float = 1000.0
     current_limit_a: float = 10.0
     phase_x_deg: float = 0.0

@@ -22,8 +22,10 @@ class FieldController:
                 config.daq_device,
                 config.current_limit_a,
                 config.safe_ramp_s,
+                config.amplifier_enable_line,
             )
         )
+        self.backend.initialize()
         self.logger = EventLogger(config.log_path)
         self.enabled = False
         self._records: dict[str, ActionRecord] = {}
@@ -40,12 +42,14 @@ class FieldController:
 
     def enable(self):
         with self._lock:
+            self.backend.enable()
             self.enabled = True
             self.logger.write("enabled")
 
     def disable(self):
         self.stop()
         with self._lock:
+            self.backend.disable()
             self.enabled = False
             self.logger.write("disabled")
 
