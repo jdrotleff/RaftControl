@@ -144,6 +144,21 @@ class NIDAQmxBackend(Backend):
     def enable(self):
         self.initialize()
         with self._lock:
+            # NI analog outputs can retain their last voltage after the
+            # previous task or process exits.  Establish a known-safe output
+            # while the amplifier is still disabled before exposing the
+            # coils to those channels.
+            nidaqmx, _, _, _ = self._import()
+            zero_task = nidaqmx.Task()
+            try:
+                names = ",".join(f"{self.device}/{c}" for c in self.channels)
+                zero_task.ao_channels.add_ao_voltage_chan(
+                    names, min_val=-self.output_limit, max_val=self.output_limit
+                )
+                zero_task.write([0.0] * len(self.channels), auto_start=True)
+                time.sleep(self._safe_ramp_s)
+            finally:
+                zero_task.close()
             if self._enable_task is not None:
                 self._enable_task.write(True, auto_start=True)
 

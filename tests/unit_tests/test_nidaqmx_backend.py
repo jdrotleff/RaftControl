@@ -143,6 +143,12 @@ def test_amplifier_enable_line_is_safe_low_then_tracks_lifecycle():
     backend.disable()
     backend.close()
 
+    zero_task = FakeTask.instances[1]
+    assert zero_task.ao_channels.calls == [
+        (("Dev1/ao0,Dev1/ao1,Dev1/ao2,Dev1/ao3",), {"min_val": -10.0, "max_val": 10.0})
+    ]
+    assert zero_task.scalar_writes == [([0.0, 0.0, 0.0, 0.0], True)]
+    assert zero_task.closed
     assert enable_task.scalar_writes == [
         (False, True),
         (True, True),
@@ -150,6 +156,39 @@ def test_amplifier_enable_line_is_safe_low_then_tracks_lifecycle():
         (False, True),
     ]
     assert enable_task.closed
+
+
+def test_amplifier_stays_disabled_when_zeroing_fails():
+    FakeTask.instances.clear()
+    backend = DryBackend(
+        ["ao0", "ao1", "ao2", "ao3"],
+        "Dev1",
+        amplifier_enable_line="port0/line0",
+    )
+    backend.initialize()
+    enable_task = FakeTask.instances[0]
+
+    original_write = FakeTask.write
+
+    def fail_analog_write(task, value, auto_start=False):
+        if task is not enable_task:
+            raise RuntimeError("simulated zero write failure")
+        original_write(task, value, auto_start)
+
+    FakeTask.write = fail_analog_write
+    try:
+        try:
+            backend.enable()
+        except RuntimeError as exc:
+            assert "simulated zero write failure" in str(exc)
+        else:
+            raise AssertionError("enable should fail when outputs cannot be zeroed")
+    finally:
+        FakeTask.write = original_write
+        backend.close()
+
+    assert enable_task.scalar_writes == [(False, True), (False, True)]
+    assert FakeTask.instances[1].closed
 
 
 def test_failed_worker_reports_error_and_can_start_fresh_task():

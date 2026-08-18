@@ -338,10 +338,21 @@ def main(argv: list[str] | None = None):
             nonlocal viewed_action_id
             if connect(show_error=False):
                 try:
-                    records = client.recent()["actions"]
+                    response = client.recent()
+                    records = response["actions"]
                     if records:
-                        latest = records[-1]
+                        active_id = response.get("active_action_id")
+                        latest = next(
+                            (record for record in records if record["action_id"] == active_id),
+                            records[-1],
+                        )
                         status.set(f"VIEWER — latest {latest['action_id'][:8]} — {latest['status']}")
+                        controller_state = "ENABLED" if response.get("enabled") else "DISABLED"
+                        action_state = "active" if active_id else "latest"
+                        status.set(
+                            f"VIEWER - {controller_state} - {action_state} "
+                            f"{latest['action_id'][:8]} - {latest['status']}"
+                        )
                         summary.set("RL actions: " + " | ".join(f"{r['action_id'][:8]}:{r['status']}" for r in records[-5:]))
                         if latest["action_id"] != viewed_action_id:
                             request = latest["request"]

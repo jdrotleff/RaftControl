@@ -100,13 +100,21 @@ class RaftControlServer:
         if kind == "recent":
             with self.controller._lock:
                 records = list(self.controller._records.values())[-20:]
+                active_action_id = self.controller._active
+                enabled = self.controller.enabled
             actions = []
             for record in records:
                 item = record.as_dict()
                 item.pop("calculated_currents_a", None)
                 item.pop("transmitted_currents_a", None)
                 actions.append(item)
-            return {"type": "recent", "request_id": request_id, "actions": actions}
+            return {
+                "type": "recent",
+                "request_id": request_id,
+                "actions": actions,
+                "active_action_id": active_action_id,
+                "enabled": enabled,
+            }
         if kind == "stop":
             self.controller.stop(request.get("action_id"))
             return {"type": "ack", "request_id": request_id}
