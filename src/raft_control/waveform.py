@@ -21,11 +21,20 @@ def build_waveform(request: ActionRequest, config: ControllerConfig, duration: f
     px, py = np.deg2rad(config.phase_x_deg), np.deg2rad(config.phase_y_deg)
     fpx, fpy = np.deg2rad(config.force_phase_x_deg), np.deg2rad(config.force_phase_y_deg)
     components = np.vstack([
-        request.by * np.sin(2 * np.pi * request.fy * t + py) * config.direction_y,
         request.bx * np.cos(2 * np.pi * request.fx * t + px) * config.direction_x,
-        request.FX * np.sin(2 * np.pi * request.fy * t + fpx),
-        request.FY * np.cos(2 * np.pi * request.fx * t + fpy),
+        request.by * np.sin(2 * np.pi * request.fy * t + py) * config.direction_y,
+        request.FX * np.cos(2 * np.pi * request.fx * t + fpy),
+        request.FY * np.sin(2 * np.pi * request.fy * t + fpx),
+        # np.full_like(t, request.FX) * np.sin(2 * np.pi * request.fy * t + fpx),
+        # np.full_like(t, request.FY) * np.cos(2 * np.pi * request.fx * t + fpy),
     ])
+    #if request.fx == 0 and request.fy == 0:
+    #    components = np.vstack([
+    #        np.full_like(t, request.bx),
+    #        np.full_like(t, request.by),
+    #        np.full_like(t, request.FX),
+    #       np.full_like(t, request.FY),
+    #    ])
     calibration = load_calibration(config.calibration_path)
     currents = calibration @ components
     gradient = components.copy()
