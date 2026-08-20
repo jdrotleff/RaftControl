@@ -81,6 +81,7 @@ def main(argv: list[str] | None = None):
     local_controller = None
     if args.local and args.mode == "controller":
         local_controller = FieldController(load_config(ROOT / "configs" / "windows.json"))
+    runtime_config = local_controller.config if local_controller is not None else preview_controller.config
     client: RaftControlClient | None = None
     enabled = False
     active_action_id: str | None = None
@@ -128,7 +129,25 @@ def main(argv: list[str] | None = None):
 
     def get_action() -> ActionRequest | None:
         try:
-            return ActionRequest(**{name: float(entry.get() or 0.0) for name, entry in entries.items()})
+            values = {name: float(entry.get() or 0.0) for name, entry in entries.items()}
+            bounds = {
+                "bx": (0.0, runtime_config.max_G),
+                "by": (0.0, runtime_config.max_G),
+                "fx": (runtime_config.min_freq, runtime_config.max_freq),
+                "fy": (runtime_config.min_freq, runtime_config.max_freq),
+                "FX": (runtime_config.min_grad, runtime_config.max_grad),
+                "FY": (runtime_config.min_grad, runtime_config.max_grad),
+            }
+            for name, (lower, upper) in bounds.items():
+                values[name] = min(max(values[name], lower), upper)
+            for name in bounds:
+                entry = entries[name]
+                current = float(entry.get() or 0.0)
+                clamped = values[name]
+                if current != clamped:
+                    entry.delete(0, tk.END)
+                    entry.insert(0, f"{clamped:.3f}")
+            return ActionRequest(**values)
         except ValueError as exc:
             messagebox.showerror("Invalid action", str(exc))
             return None

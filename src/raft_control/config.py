@@ -20,6 +20,13 @@ class ControllerConfig:
     amplifier_enable_line: str | None = None
     sample_rate_hz: float = 1000.0
     current_limit_a: float = 10.0
+    # TODO: Once tested first set of dynamics, set gradient limits to +-0.8!
+    # TODO: Also in windows and sim config!
+    min_grad: float = -0.7
+    max_grad: float = 1.0
+    max_G: float = 160.0
+    min_freq: float = -100.0
+    max_freq: float = 100.0
     phase_x_deg: float = 0.0
     phase_y_deg: float = 0.0
     force_phase_x_deg: float = 0.0
@@ -35,7 +42,14 @@ class ControllerConfig:
     def __post_init__(self) -> None:
         self.calibration_path = str(DEFAULT_CALIBRATION_PATH)
         if self.current_limit_a != 10.0:
-            raise ValueError("RaftControl requires a ±10 A current limit")
+            raise ValueError("RaftControl requires a +/-10 A current limit")
+# TODO: Once tested first set of dynamics, set gradient limits to +-0.8!
+        if self.min_grad != -0.7 or self.max_grad != 1.0:
+            raise ValueError("RaftControl requires gradient limits of -0.7 to 1.0")
+        if self.max_G != 160.0:
+            raise ValueError("RaftControl requires a 160 G field limit")
+        if self.min_freq != -100.0 or self.max_freq != 100.0:
+            raise ValueError("RaftControl requires frequency limits of -100 to 100")
 
     @property
     def channel_mapping(self) -> list[str]:
