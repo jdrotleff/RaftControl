@@ -8,6 +8,11 @@ from typing import Any
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CALIBRATION_PATH = PACKAGE_ROOT / "configs" / "field_config" / "AM_new_coil_system.txt"
+DEFAULT_MIN_GRAD = -0.8
+DEFAULT_MAX_GRAD = 0.8
+DEFAULT_MAX_G = 160.0
+DEFAULT_MIN_FREQ = -100.0
+DEFAULT_MAX_FREQ = 100.0
 
 
 @dataclass(slots=True)
@@ -20,13 +25,11 @@ class ControllerConfig:
     amplifier_enable_line: str | None = None
     sample_rate_hz: float = 1000.0
     current_limit_a: float = 10.0
-    # TODO: Once tested first set of dynamics, set gradient limits to +-0.8!
-    # TODO: Also in windows and sim config!
-    min_grad: float = -0.7
-    max_grad: float = 1.0
-    max_G: float = 160.0
-    min_freq: float = -100.0
-    max_freq: float = 100.0
+    min_grad: float = DEFAULT_MIN_GRAD
+    max_grad: float = DEFAULT_MAX_GRAD
+    max_G: float = DEFAULT_MAX_G
+    min_freq: float = DEFAULT_MIN_FREQ
+    max_freq: float = DEFAULT_MAX_FREQ
     phase_x_deg: float = 0.0
     phase_y_deg: float = 0.0
     force_phase_x_deg: float = 0.0
@@ -43,12 +46,11 @@ class ControllerConfig:
         self.calibration_path = str(DEFAULT_CALIBRATION_PATH)
         if self.current_limit_a != 10.0:
             raise ValueError("RaftControl requires a +/-10 A current limit")
-# TODO: Once tested first set of dynamics, set gradient limits to +-0.8!
-        if self.min_grad != -0.7 or self.max_grad != 1.0:
-            raise ValueError("RaftControl requires gradient limits of -0.7 to 1.0")
-        if self.max_G != 160.0:
+        if self.min_grad != DEFAULT_MIN_GRAD or self.max_grad != DEFAULT_MAX_GRAD:
+            raise ValueError("RaftControl requires gradient limits of -0.8 to 0.8")
+        if self.max_G != DEFAULT_MAX_G:
             raise ValueError("RaftControl requires a 160 G field limit")
-        if self.min_freq != -100.0 or self.max_freq != 100.0:
+        if self.min_freq != DEFAULT_MIN_FREQ or self.max_freq != DEFAULT_MAX_FREQ:
             raise ValueError("RaftControl requires frequency limits of -100 to 100")
 
     @property
