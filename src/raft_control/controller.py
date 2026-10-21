@@ -143,6 +143,9 @@ class FieldController:
     def _started(self, action_id):
         with self._lock:
             self._emit(self._records[action_id], ActionStatus.STARTED)
+            switch = getattr(self.backend, "started_switch", None)
+            if switch:
+                self.logger.write("phase_at_switch", action_id=action_id, **switch)
 
     def _duration(self, action_id):
         with self._lock:

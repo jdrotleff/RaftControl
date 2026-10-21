@@ -117,3 +117,34 @@ def test_stream_rejects_invalid_ranges():
             pass
         else:
             raise AssertionError(f"samples({start}, {count}) should be rejected")
+
+
+def test_carrier_phase_at_matches_the_absolute_time_axis():
+    config = ControllerConfig(sample_rate_hz=10_000, stream_window_s=10)
+    stream = build_waveform(EXAMPLE, config).stream
+    index = 123_457
+
+    phase = stream.carrier_phase_at(index)
+
+    t = index / config.sample_rate_hz
+    expected = np.mod(2 * np.pi * np.array([EXAMPLE.fx, EXAMPLE.fy]) * t, 2 * np.pi)
+    np.testing.assert_allclose(phase, expected, atol=1e-9)
+    assert np.all((phase >= 0) & (phase < 2 * np.pi))
+    np.testing.assert_allclose(stream.carrier_phase_at(0), 0)
+
+
+def test_rig_field_matches_the_engine_convention_on_global_time():
+    """Engine: B = b cos(2 pi f t - phi) with phi = (0, pi/2), i.e. Bx cos, By sin."""
+    from raft_control.waveform import _components
+
+    config = ControllerConfig(sample_rate_hz=10_000)
+    request = ActionRequest(30.038, 53.65, 45.99, 46.35, 0, 0, 3)
+    t = np.arange(0, 5_000) / config.sample_rate_hz
+    phi = np.array([0.0, np.pi / 2])
+
+    engine_x = request.bx * np.cos(2 * np.pi * request.fx * t - phi[0])
+    engine_y = request.by * np.cos(2 * np.pi * request.fy * t - phi[1])
+    rig = _components(request, config, t)
+
+    np.testing.assert_allclose(rig[0], engine_x, atol=1e-9)
+    np.testing.assert_allclose(rig[1], engine_y, atol=1e-9)

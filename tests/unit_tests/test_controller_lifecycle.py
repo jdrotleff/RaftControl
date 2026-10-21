@@ -106,3 +106,17 @@ def test_server_raises_priority_only_when_configured(monkeypatch):
     assert raised == []
     server_module.apply_process_priority(ControllerConfig(high_priority=True))
     assert raised == [True]
+
+
+def test_started_switch_is_logged_as_phase_at_switch():
+    control, backend, log_path = controller("phase_at_switch.jsonl")
+    backend.started_switch = {"sample_index": 5, "time_s": 0.005, "carrier_phase_rad": [0.1, 0.2], "phase_jump_rad": [0.0, 0.3]}
+    control.enable()
+    record = control.send(action())
+    time.sleep(0.05)
+    control.stop(record.action_id)
+
+    lines = [line for line in log_path.read_text(encoding="utf-8").splitlines() if '"phase_at_switch"' in line]
+    assert lines
+    assert f'"action_id":"{record.action_id}"' in lines[0]
+    assert '"phase_jump_rad":[0.0,0.3]' in lines[0]

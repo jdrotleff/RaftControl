@@ -53,6 +53,12 @@ class WaveformStream:
         currents = self.calibration @ _components(self.request, self.config, t)
         return np.clip(currents, -self.current_limit_a, self.current_limit_a)
 
+    def carrier_phase_at(self, index: int) -> np.ndarray:
+        """Carrier phases (x, y) in rad at an absolute sample index, in [0, 2 pi)."""
+        t = index / self.sample_rate_hz
+        phase = 2 * np.pi * np.array([self.request.fx, self.request.fy]) * t
+        return np.mod(phase, 2 * np.pi)
+
 
 def build_waveform(request: ActionRequest, config: ControllerConfig, duration: float | None = None) -> WaveformResult:
     if request.duration <= 0 or not math.isfinite(request.duration):

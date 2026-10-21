@@ -13,6 +13,21 @@ def _keep_duration(waveform) -> float:
     return max(0.0, (waveform.clipped_currents_a.shape[1] - 1) / waveform.sample_rate_hz)
 
 
+def _switch_record(old_stream, new_stream, index):
+    """Where a replacement begins on the sample clock and the phase jump it causes."""
+    rate = new_stream.sample_rate_hz
+    new_phase = new_stream.carrier_phase_at(index)
+    record = {
+        "sample_index": int(index),
+        "time_s": index / rate,
+        "carrier_phase_rad": new_phase.tolist(),
+    }
+    if old_stream is not None:
+        jump = new_phase - old_stream.carrier_phase_at(index)
+        record["phase_jump_rad"] = ((jump + np.pi) % (2 * np.pi) - np.pi).tolist()
+    return record
+
+
 class Backend:
     name = "backend"
 
@@ -128,6 +143,9 @@ class NIDAQmxBackend(Backend):
         self._data_xfer_req_cond = data_xfer_req_cond
         # Queue measurements of the most recent task; see run() below.
         self.stream_stats = {}
+        # Switch record (sample index, carrier phases, phase jump) of the
+        # action whose first sample the device generated last, for the log.
+        self.started_switch = None
 
     def _import(self):
         try:
@@ -242,6 +260,7 @@ class NIDAQmxBackend(Backend):
                 written = initial.shape[1]
                 last_sample = initial[:, -1].copy()
                 task.start()
+                self.started_switch = None
                 on_started()
                 started_at = time.monotonic()
                 duration_sent = False
@@ -278,18 +297,28 @@ class NIDAQmxBackend(Backend):
                             self._replacement = None
                             self._replacement_event.clear()
                         if replacement is not None:
+                            switch = None
+                            new_stream = getattr(replacement[0], "stream", None)
+                            if new_stream is None:
+                                # Array-only sources index a repeating window,
+                                # not absolute time.
+                                sample_index = 0
+                            else:
+                                # Replacements continue on the absolute sample
+                                # clock, so time is continuous across actions.
+                                sample_index = written
+                                switch = _switch_record(getattr(current[0], "stream", None), new_stream, written)
                             current = replacement
-                            # A replacement starts its own waveform at phase 0.
-                            sample_index = 0
                             started_at = None
                             duration_sent = False
-                            pending.append((written, replacement))
+                            pending.append((written, replacement, switch))
                     if pending:
                         while pending and generated >= pending[0][0]:
-                            position, action = pending.pop(0)
+                            position, action, switch = pending.pop(0)
                             if action is current:
                                 # Back-date to when the first sample was generated.
                                 started_at = time.monotonic() - (generated - position) / action[0].sample_rate_hz
+                            self.started_switch = switch
                             action[1]()
                     if started_at is not None and not duration_sent and time.monotonic() - started_at >= _keep_duration(current[0]):
                         current[2]()

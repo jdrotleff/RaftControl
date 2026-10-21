@@ -276,35 +276,103 @@ def test_streamed_chunks_are_phase_continuous_across_window_boundaries():
     np.testing.assert_allclose(streamed, long_waveform.stream.samples(0, streamed.shape[1]), atol=1e-12)
 
 
-def test_replacement_restarts_phase_at_zero():
+def _switch_offset(second, size=20, timeout=2.0):
+    """Sample index where the replacement begins, found from the written output.
+
+    The first write that equals the replacement evaluated at its own offset
+    (and not the old action) marks the switch; this does not depend on when
+    the started callback fires.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        offset = 0
+        for values in list(FakeWriter.writes):
+            n = values.shape[1]
+            if n >= size and np.allclose(values[:, :size], second.stream.samples(offset, size), atol=1e-12):
+                return offset
+            offset += n
+        time.sleep(0.001)
+    raise AssertionError("replacement was never written")
+
+
+def _run_replacement(first, second, extra_writes=3):
+    FakeTask.instances.clear()
+    FakeWriter.writes.clear()
+    backend = DryBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005)
+    started = threading.Event()
+    seen = {}
+
+    def on_started():
+        seen["switch"] = dict(backend.started_switch or {})
+        started.set()
+
+    backend.start(first, lambda: None, lambda: None, lambda error: None)
+    _wait_for_writes(5)
+    backend.replace(second, on_started, lambda: None, lambda error: None)
+    assert started.wait(1)
+    position = _switch_offset(second)
+    _wait_for_writes(len(FakeWriter.writes) + extra_writes)
+    backend.stop()
+    return position, seen["switch"]
+
+
+def test_replacement_continues_absolute_time():
     from raft_control.config import ControllerConfig
     from raft_control.models import ActionRequest
     from raft_control.waveform import build_waveform
 
-    FakeTask.instances.clear()
-    FakeWriter.writes.clear()
     config = ControllerConfig(sample_rate_hz=1_000, stream_window_s=0.1)
     first = build_waveform(ActionRequest(30.038, 53.65, 45.99, 46.35, 0, 0, 300), config)
     second = build_waveform(ActionRequest(20, 40, 12.34, 56.78, 0, 0, 300), config)
-    backend = DryBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005)
-    replaced_at = []
-    second_started = threading.Event()
 
-    backend.start(first, lambda: None, lambda: None, lambda error: None)
-    _wait_for_writes(5)
-    backend.replace(
-        second,
-        lambda: (replaced_at.append(len(FakeWriter.writes)), second_started.set()),
-        lambda: None,
-        lambda error: None,
-    )
-    assert second_started.wait(1)
-    _wait_for_writes(replaced_at[0] + 3)
-    backend.stop()
+    position, _ = _run_replacement(first, second)
 
-    chunk = FakeWriter.writes[replaced_at[0]].shape[1]
-    after = np.concatenate(FakeWriter.writes[replaced_at[0]:replaced_at[0] + 3], axis=1)
-    np.testing.assert_allclose(after, second.stream.samples(0, 3 * chunk), atol=1e-12)
+    assert position > 0
+    # Everything from the switch on is the replacement at absolute time.
+    offset, tail = 0, []
+    for values in FakeWriter.writes[:-1]:  # last write is the ramp
+        if offset >= position:
+            tail.append(values)
+        offset += values.shape[1]
+    after = np.concatenate(tail, axis=1)
+    np.testing.assert_allclose(after, second.stream.samples(position, after.shape[1]), atol=1e-12)
+
+
+def test_identical_action_replacement_is_seamless():
+    from raft_control.config import ControllerConfig
+    from raft_control.models import ActionRequest
+    from raft_control.waveform import build_waveform
+
+    config = ControllerConfig(sample_rate_hz=1_000, stream_window_s=0.1)
+    request = ActionRequest(30.038, 53.65, 45.99, 46.35, 0, 0, 300)
+    first, second = build_waveform(request, config), build_waveform(request, config)
+
+    _, switch = _run_replacement(first, second)
+
+    streamed = np.concatenate(FakeWriter.writes[:-1], axis=1)
+    np.testing.assert_allclose(streamed, first.stream.samples(0, streamed.shape[1]), atol=1e-12)
+    np.testing.assert_allclose(switch["phase_jump_rad"], 0, atol=1e-9)
+
+
+def test_frequency_change_jump_follows_the_sim_formula():
+    from raft_control.config import ControllerConfig
+    from raft_control.models import ActionRequest
+    from raft_control.waveform import build_waveform
+
+    config = ControllerConfig(sample_rate_hz=1_000, stream_window_s=0.1)
+    first = build_waveform(ActionRequest(30.038, 53.65, 45.99, 46.35, 0, 0, 300), config)
+    second = build_waveform(ActionRequest(30.038, 53.65, 12.34, 56.78, 0, 0, 300), config)
+
+    position, switch = _run_replacement(first, second)
+
+    # Same rule as the engine, cos(2 pi f t - phi) on global time: a changed
+    # frequency jumps by 2 pi (f2 - f1) t at the switch, it is not carried over.
+    t = position / config.sample_rate_hz
+    expected = 2 * np.pi * np.array([12.34 - 45.99, 56.78 - 46.35]) * t
+    expected = (expected + np.pi) % (2 * np.pi) - np.pi
+    assert switch["sample_index"] == position
+    np.testing.assert_allclose(switch["phase_jump_rad"], expected, atol=1e-9)
+    assert np.abs(expected).max() > 0.1  # the test would be vacuous without a jump
 
 
 def test_replacement_started_waits_until_buffered_samples_are_generated():
@@ -327,18 +395,7 @@ def test_replacement_started_waits_until_buffered_samples_are_generated():
         backend.replace(second, second_started.set, second_duration.set, lambda error: None)
 
         # Locate where the replacement's samples begin in the output stream.
-        head = second.stream.samples(0, 20)
-        deadline = time.monotonic() + 2
-        position = None
-        while position is None and time.monotonic() < deadline:
-            offset = 0
-            for values in list(FakeWriter.writes):
-                if values.shape == head.shape and np.allclose(values, head):
-                    position = offset
-                    break
-                offset += values.shape[1]
-            time.sleep(0.001)
-        assert position is not None
+        position = _switch_offset(second)
 
         # Queued but not yet generated: neither started nor timing keep time.
         FakeStream.generated_override = position - 1
