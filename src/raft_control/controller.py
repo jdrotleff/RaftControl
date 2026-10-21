@@ -143,6 +143,8 @@ class FieldController:
     def _started(self, action_id):
         with self._lock:
             self._emit(self._records[action_id], ActionStatus.STARTED)
+            # Side channel from the backend: it sets started_switch just before
+            # calling this callback, so the record is only valid right here.
             switch = getattr(self.backend, "started_switch", None)
             if switch:
                 self.logger.write("phase_at_switch", action_id=action_id, **switch)

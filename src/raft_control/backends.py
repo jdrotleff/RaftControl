@@ -145,6 +145,8 @@ class NIDAQmxBackend(Backend):
         self.stream_stats = {}
         # Switch record (sample index, carrier phases, phase jump) of the
         # action whose first sample the device generated last, for the log.
+        # Side channel to FieldController._started: only valid inside the
+        # on_started callback, which run() calls right after setting it.
         self.started_switch = None
 
     def _import(self):
