@@ -4,6 +4,7 @@
   "channels": ["ao0", "ao1", "ao2", "ao3"],
   "amplifier_enable_line": "port0/line0",
   "sample_rate_hz": 10000.0,
+  "stream_window_s": 10.0,
   "current_limit_a": 10.0,
   "min_grad": -0.8,
   "max_grad": 0.8,

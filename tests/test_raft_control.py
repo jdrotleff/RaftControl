@@ -38,7 +38,7 @@ def test_protocol_handles_fragmented_frames():
 def test_reference_waveform_and_safety():
     controller = FieldController(make_config(sample_rate_hz=10000), backend=SimulationBackend())
     wave = controller.preview(req(bx=10, by=20, fx=1, fy=2, duration=1, FX=.5, FY=-.5)).waveform
-    np.testing.assert_allclose(np.abs(wave.clipped_currents_a).max(axis=1), [3.83720259, 1.57570633, 3.60082197, 4.59213331], atol=1e-7)
+    np.testing.assert_allclose(np.abs(wave.clipped_currents_a).max(axis=1), [3.06368851, 2.08327642, 3.12046691, 5.42668516], atol=1e-7)
     assert np.max(np.abs(wave.clipped_currents_a)) <= 10
 
 

@@ -15,7 +15,13 @@ def build_waveform(request: ActionRequest, config: ControllerConfig, duration: f
         raise ValueError("all action values must be finite")
     if config.sample_rate_hz <= 0:
         raise ValueError("sample rate must be positive")
-    output_duration = request.duration if duration is None else duration
+    # Hardware output is cyclic.  Keeping a bounded waveform avoids allocating
+    # and copying hundreds of MB for long keep times (for example 300 s at
+    # 10 kHz).  The requested keep time is carried separately in duration_s.
+    output_duration = min(
+        request.duration if duration is None else duration,
+        config.stream_window_s,
+    )
     count = max(2, int(round(output_duration * config.sample_rate_hz)))
     t = np.arange(count, dtype=float) / config.sample_rate_hz
     px, py = np.deg2rad(config.phase_x_deg), np.deg2rad(config.phase_y_deg)
@@ -50,5 +56,5 @@ def build_waveform(request: ActionRequest, config: ControllerConfig, duration: f
         clipped=np.not_equal(currents, clipped),
         sample_rate_hz=config.sample_rate_hz,
         calibration_version=config.calibration_version,
+        duration_s=request.duration,
     )
-

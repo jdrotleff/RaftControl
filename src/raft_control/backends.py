@@ -6,6 +6,13 @@ from collections.abc import Callable
 import numpy as np
 
 
+def _keep_duration(waveform) -> float:
+    duration = getattr(waveform, "duration_s", None)
+    if duration is not None:
+        return max(0.0, float(duration))
+    return max(0.0, (waveform.clipped_currents_a.shape[1] - 1) / waveform.sample_rate_hz)
+
+
 class Backend:
     name = "backend"
 
@@ -48,7 +55,7 @@ class SimulationBackend(Backend):
         self._stop.clear()
         self._waveform = waveform
         self._replacement = None
-        self._duration = max(0.0, (waveform.clipped_currents_a.shape[1] - 1) / waveform.sample_rate_hz)
+        self._duration = _keep_duration(waveform)
 
         def run():
             try:
@@ -67,7 +74,7 @@ class SimulationBackend(Backend):
                         self._replacement_event.clear()
                         if replacement is not None:
                             current = replacement
-                            self._duration = max(0.0, (current[0].clipped_currents_a.shape[1] - 1) / current[0].sample_rate_hz)
+                            self._duration = _keep_duration(current[0])
                             started_at = time.monotonic()
                             duration_sent = False
                             current[1]()
@@ -182,8 +189,11 @@ class NIDAQmxBackend(Backend):
                 task = nidaqmx.Task()
                 names = ",".join(f"{self.device}/{c}" for c in self.channels)
                 task.ao_channels.add_ao_voltage_chan(names, min_val=-self.output_limit, max_val=self.output_limit)
-                chunk_samples = max(2, int(round(waveform.sample_rate_hz * 0.01)))
-                buffer_samples = chunk_samples * 4
+                # A 500 ms device buffer tolerates normal Windows scheduling
+                # stalls.  Writes stay at 20 ms so replacement checks remain
+                # frequent without relying on a fragile 40 ms total buffer.
+                chunk_samples = max(2, int(round(waveform.sample_rate_hz * 0.02)))
+                buffer_samples = chunk_samples * 25
                 task.timing.cfg_samp_clk_timing(
                     waveform.sample_rate_hz,
                     sample_mode=acquisition.CONTINUOUS,
@@ -205,8 +215,7 @@ class NIDAQmxBackend(Backend):
                     indices = (np.arange(chunk_samples) + index) % values.shape[1]
                     return np.ascontiguousarray(values[:, indices]), (index + chunk_samples) % values.shape[1]
 
-                # Fill the complete output buffer before starting. This gives
-                # the worker 40 ms of scheduling headroom without regeneration.
+                # Fill the complete output buffer before starting.
                 initial_parts = []
                 for _ in range(buffer_samples // chunk_samples):
                     part, sample_index = next_chunk(waveform, sample_index)
@@ -230,7 +239,7 @@ class NIDAQmxBackend(Backend):
                             started_at = time.monotonic()
                             duration_sent = False
                             current[1]()
-                    if not duration_sent and time.monotonic() - started_at >= current[0].time_s[-1]:
+                    if not duration_sent and time.monotonic() - started_at >= _keep_duration(current[0]):
                         current[2]()
                         duration_sent = True
                     chunk, sample_index = next_chunk(current[0], sample_index)

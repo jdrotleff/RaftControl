@@ -121,9 +121,27 @@ def test_one_task_streams_replacement_and_ramps_to_zero():
     assert len(FakeTask.instances) == 1
     assert FakeTask.instances[0].closed
     assert FakeTask.instances[0].out_stream.regen_mode == "disabled"
-    assert FakeWriter.writes[0].shape == (4, 40)
+    # 25 x 20 ms chunks provide 500 ms scheduling headroom.
+    assert FakeWriter.writes[0].shape == (4, 500)
     assert any(np.all(values == 2) for values in FakeWriter.writes)
     np.testing.assert_allclose(FakeWriter.writes[-1][:, -1], 0)
+
+
+def test_300_second_keep_time_uses_bounded_stream_and_is_not_zeroed():
+    from raft_control.config import ControllerConfig
+    from raft_control.models import ActionRequest
+    from raft_control.waveform import build_waveform
+
+    config = ControllerConfig(sample_rate_hz=10_000, stream_window_s=10)
+    request = ActionRequest(30, 53, 45, 46, 0, 0, 300)
+    long_waveform = build_waveform(request, config)
+
+    assert long_waveform.duration_s == 300
+    assert long_waveform.clipped_currents_a.shape == (4, 100_000)
+    assert not np.all(long_waveform.clipped_currents_a == 0)
+    # The lifecycle timer must use the keep time, not the bounded stream window.
+    from raft_control.backends import _keep_duration
+    assert _keep_duration(long_waveform) == 300
 
 
 def test_amplifier_enable_line_is_safe_low_then_tracks_lifecycle():

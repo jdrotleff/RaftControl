@@ -55,6 +55,7 @@ class WaveformResult:
     clipped: Any
     sample_rate_hz: float
     calibration_version: str
+    duration_s: float | None = None
 
 
 @dataclass(slots=True)

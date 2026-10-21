@@ -24,6 +24,7 @@ class ControllerConfig:
     channels: list[str] = field(default_factory=lambda: ["ao0", "ao1", "ao2", "ao3"])
     amplifier_enable_line: str | None = None
     sample_rate_hz: float = 1000.0
+    stream_window_s: float = 10.0
     current_limit_a: float = 10.0
     min_grad: float = DEFAULT_MIN_GRAD
     max_grad: float = DEFAULT_MAX_GRAD
@@ -44,6 +45,8 @@ class ControllerConfig:
 
     def __post_init__(self) -> None:
         self.calibration_path = str(DEFAULT_CALIBRATION_PATH)
+        if self.sample_rate_hz <= 0 or self.stream_window_s <= 0:
+            raise ValueError("sample rate and stream window must be positive")
         if self.current_limit_a != 10.0:
             raise ValueError("RaftControl requires a +/-10 A current limit")
         if self.min_grad != DEFAULT_MIN_GRAD or self.max_grad != DEFAULT_MAX_GRAD:
