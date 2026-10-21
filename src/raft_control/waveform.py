@@ -54,7 +54,12 @@ class WaveformStream:
         return np.clip(currents, -self.current_limit_a, self.current_limit_a)
 
     def carrier_phase_at(self, index: int) -> np.ndarray:
-        """Carrier phases (x, y) in rad at an absolute sample index, in [0, 2 pi)."""
+        """Raw carrier phases 2 pi f t (x, y) in rad at an absolute sample index, in [0, 2 pi).
+
+        Config phase offsets and direction signs are not included, so this is
+        not the phase sent to the coils; differences between two actions are
+        unaffected because those terms cancel.
+        """
         t = index / self.sample_rate_hz
         phase = 2 * np.pi * np.array([self.request.fx, self.request.fy]) * t
         return np.mod(phase, 2 * np.pi)

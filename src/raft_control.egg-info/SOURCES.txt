@@ -8,7 +8,6 @@ src/raft_control/config.py
 src/raft_control/controller.py
 src/raft_control/logging.py
 src/raft_control/models.py
-src/raft_control/priority.py
 src/raft_control/protocol.py
 src/raft_control/server.py
 src/raft_control/waveform.py
