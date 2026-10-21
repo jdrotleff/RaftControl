@@ -269,7 +269,18 @@ class NIDAQmxBackend(Backend):
                 ramp_samples = max(2, int(round(current[0].sample_rate_hz * self._safe_ramp_s)))
                 ramp = np.linspace(last_sample, np.zeros_like(last_sample), ramp_samples, axis=0).T
                 writer.write_many_sample(np.ascontiguousarray(ramp), timeout=2.0)
-                time.sleep(self._safe_ramp_s + 0.05)
+                written += ramp_samples
+                # The ramp is queued behind up to one buffer of waveform.
+                # Stopping the task discards unplayed samples, so wait until
+                # the device has generated the final zero.  The deadline is
+                # bounded by what the device buffer can hold.
+                rate = current[0].sample_rate_hz
+                deadline = time.monotonic() + (buffer_samples + ramp_samples) / rate + 0.25
+                while time.monotonic() < deadline:
+                    remaining = written - task.out_stream.total_samp_per_chan_generated
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(0.005, remaining / rate))
             except Exception as exc:
                 error = str(exc)
             finally:
@@ -286,25 +297,25 @@ class NIDAQmxBackend(Backend):
                     except Exception as exc:
                         if error is None:
                             error = str(exc)
-                if error:
-                    # A failed buffered task may retain its last AO value. Make
-                    # a best-effort on-demand zero write after releasing it.
-                    zero_task = None
-                    try:
-                        zero_task = nidaqmx.Task()
-                        names = ",".join(f"{self.device}/{c}" for c in self.channels)
-                        zero_task.ao_channels.add_ao_voltage_chan(
-                            names, min_val=-self.output_limit, max_val=self.output_limit
-                        )
-                        zero_task.write([0.0] * len(self.channels), auto_start=True)
-                    except Exception:
-                        pass
-                    finally:
-                        if zero_task is not None:
-                            try:
-                                zero_task.close()
-                            except Exception:
-                                pass
+                # NI analog outputs hold their last value after a buffered task
+                # stops or fails.  Always make a best-effort on-demand zero
+                # write after releasing the task.
+                zero_task = None
+                try:
+                    zero_task = nidaqmx.Task()
+                    names = ",".join(f"{self.device}/{c}" for c in self.channels)
+                    zero_task.ao_channels.add_ao_voltage_chan(
+                        names, min_val=-self.output_limit, max_val=self.output_limit
+                    )
+                    zero_task.write([0.0] * len(self.channels), auto_start=True)
+                except Exception:
+                    pass
+                finally:
+                    if zero_task is not None:
+                        try:
+                            zero_task.close()
+                        except Exception:
+                            pass
                 current_done = current[3] if "current" in locals() else on_done
                 try:
                     current_done(error or "stopped" if self._stop.is_set() else error)

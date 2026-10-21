@@ -135,7 +135,10 @@ def test_one_task_streams_replacement_and_ramps_to_zero():
     assert second_started.wait(1)
     backend.stop()
 
-    assert len(FakeTask.instances) == 1
+    # Replacement reuses the one clocked streaming task; the only other task
+    # is the on-demand zero write after stopping.
+    assert [bool(t.timing.calls) for t in FakeTask.instances] == [True, False]
+    assert FakeTask.instances[1].scalar_writes == [([0.0, 0.0, 0.0, 0.0], True)]
     assert FakeTask.instances[0].closed
     assert FakeTask.instances[0].out_stream.regen_mode == "disabled"
     # 25 x 20 ms chunks provide 500 ms scheduling headroom.
@@ -351,3 +354,64 @@ def test_replacement_started_waits_until_buffered_samples_are_generated():
     finally:
         FakeStream.generated_override = None
         backend.stop()
+
+
+def _stop_in_thread(backend):
+    thread = threading.Thread(target=backend.stop)
+    thread.start()
+    return thread
+
+
+def test_stop_waits_for_buffered_ramp_then_zeroes_outputs():
+    FakeTask.instances.clear()
+    FakeWriter.writes.clear()
+    backend = DryBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005)
+    started = threading.Event()
+    done = []
+    try:
+        backend.start(waveform(1), started.set, lambda: None, done.append)
+        assert started.wait(1)
+        _wait_for_writes(3)
+        stream_task = FakeTask.instances[0]
+        # The device lags the writer: the ramp is still queued behind samples.
+        FakeStream.generated_override = stream_task.out_stream.written
+        stopping = _stop_in_thread(backend)
+        time.sleep(0.15)
+        assert stream_task.started, "task must not stop before the ramp is generated"
+
+        FakeStream.generated_override = None
+        stopping.join(2)
+        assert not stopping.is_alive()
+    finally:
+        FakeStream.generated_override = None
+        backend.stop()
+
+    assert not stream_task.started and stream_task.closed
+    np.testing.assert_allclose(FakeWriter.writes[-1][:, -1], 0)
+    zero_task = FakeTask.instances[1]
+    assert zero_task.scalar_writes == [([0.0, 0.0, 0.0, 0.0], True)]
+    assert zero_task.closed
+    assert done == ["stopped"]
+
+
+def test_stop_is_bounded_when_device_never_catches_up():
+    FakeTask.instances.clear()
+    FakeWriter.writes.clear()
+    backend = DryBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005)
+    started = threading.Event()
+    try:
+        backend.start(waveform(1), started.set, lambda: None, lambda error: None)
+        assert started.wait(1)
+        FakeStream.generated_override = 0
+        _wait_for_writes(50)
+        began = time.monotonic()
+        backend.stop()
+        elapsed = time.monotonic() - began
+    finally:
+        FakeStream.generated_override = None
+        backend.stop()
+
+    # At most one 500 ms buffer plus the ramp and a margin, never unbounded.
+    assert elapsed < 1.0
+    assert FakeTask.instances[0].closed
+    assert FakeTask.instances[1].scalar_writes == [([0.0, 0.0, 0.0, 0.0], True)]
