@@ -23,6 +23,8 @@ class FieldController:
                 config.current_limit_a,
                 config.safe_ramp_s,
                 config.amplifier_enable_line,
+                config.stream_buffer_s,
+                config.ao_data_xfer_req_cond,
             )
         )
         self.backend.initialize()
@@ -165,6 +167,9 @@ class FieldController:
         self.backend.replace(new_waveform, lambda: self._started(action_id), lambda: self._duration(action_id), lambda e: self._done(action_id, e))
 
     def _done(self, action_id, error):
+        stats = getattr(self.backend, "stream_stats", None)
+        if stats:
+            self.logger.write("stream_stats", action_id=action_id, **stats)
         with self._lock:
             record = self._records[action_id]
             if self._active != action_id and record.status == ActionStatus.REPLACED:

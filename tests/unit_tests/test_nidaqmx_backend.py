@@ -415,3 +415,95 @@ def test_stop_is_bounded_when_device_never_catches_up():
     assert elapsed < 1.0
     assert FakeTask.instances[0].closed
     assert FakeTask.instances[1].scalar_writes == [([0.0, 0.0, 0.0, 0.0], True)]
+
+
+class RealtimeStream(FakeStream):
+    """Device that generates samples in real time from task start."""
+
+    rate = 1000
+
+    def __init__(self):
+        super().__init__()
+        self.started_at = None
+
+    @property
+    def total_samp_per_chan_generated(self):
+        if self.started_at is None:
+            return 0
+        return min(self.written, int((time.monotonic() - self.started_at) * self.rate))
+
+
+class RealtimeTask(FakeTask):
+    def __init__(self):
+        super().__init__()
+        self.out_stream = RealtimeStream()
+
+    def start(self):
+        super().start()
+        self.out_stream.started_at = time.monotonic()
+
+
+class RealtimeWriter(FakeWriter):
+    """Blocks like DAQmx until the host buffer has room; can stall once."""
+
+    stall_after_chunks = None
+    stall_s = 0.0
+
+    def __init__(self, stream, auto_start=False):
+        super().__init__(stream, auto_start)
+        self.calls = 0
+
+    def write_many_sample(self, values, timeout=None):
+        task = next(t for t in FakeTask.instances if t.out_stream is self.stream)
+        capacity = task.timing.calls[0][1]["samps_per_chan"]
+        while self.stream.written - self.stream.total_samp_per_chan_generated + values.shape[1] > capacity:
+            time.sleep(0.001)
+        self.calls += 1
+        if self.calls == type(self).stall_after_chunks:
+            time.sleep(type(self).stall_s)
+        FakeWriter.writes.append(values.copy())
+        self.stream.written += values.shape[1]
+
+
+class DryRealtimeBackend(DryBackend):
+    def _import(self):
+        _, acquisition, regeneration, _ = super()._import()
+        driver = type("Driver", (), {"Task": RealtimeTask})
+        return driver, acquisition, regeneration, RealtimeWriter
+
+
+def test_buffer_size_is_configurable():
+    FakeTask.instances.clear()
+    FakeWriter.writes.clear()
+    backend = DryBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005, buffer_s=0.1)
+    started = threading.Event()
+    backend.start(waveform(1), started.set, lambda: None, lambda error: None)
+    assert started.wait(1)
+    backend.stop()
+
+    assert FakeTask.instances[0].timing.calls[0][1]["samps_per_chan"] == 100
+    assert FakeWriter.writes[0].shape == (4, 100)
+    assert backend.stream_stats["buffer_s"] == 0.1
+
+
+def test_stream_stats_reveal_stall_depth():
+    FakeTask.instances.clear()
+    FakeWriter.writes.clear()
+    RealtimeWriter.stall_after_chunks = 10
+    RealtimeWriter.stall_s = 0.12
+    backend = DryRealtimeBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005, buffer_s=0.2)
+    started = threading.Event()
+    try:
+        backend.start(waveform(1), started.set, lambda: None, lambda error: None)
+        assert started.wait(1)
+        time.sleep(0.6)
+    finally:
+        RealtimeWriter.stall_after_chunks = None
+        backend.stop()
+
+    stats = backend.stream_stats
+    assert stats["buffer_s"] == 0.2
+    assert stats["chunks"] > 10
+    assert stats["max_loop_gap_s"] >= 0.12
+    # A 120 ms stall consumes ~120 ms of the 200 ms queue (plus up to one chunk).
+    assert 0.03 <= stats["min_headroom_s"] <= 0.09

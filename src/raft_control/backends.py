@@ -107,6 +107,8 @@ class NIDAQmxBackend(Backend):
         output_limit=10.0,
         safe_ramp_s=0.05,
         amplifier_enable_line=None,
+        buffer_s=0.5,
+        data_xfer_req_cond=None,
     ):
         self.channels, self.device = channels, device
         self.output_limit = output_limit
@@ -119,6 +121,13 @@ class NIDAQmxBackend(Backend):
         self._replacement_event = threading.Event()
         self._thread = None
         self._safe_ramp_s = safe_ramp_s
+        self._buffer_s = buffer_s
+        # Optional nidaqmx OutputDataTransferCondition member name, for
+        # example "ON_BOARD_MEMORY_EMPTY", to keep less data in the device
+        # FIFO.  None keeps the driver default.
+        self._data_xfer_req_cond = data_xfer_req_cond
+        # Queue measurements of the most recent task; see run() below.
+        self.stream_stats = {}
 
     def _import(self):
         try:
@@ -189,11 +198,11 @@ class NIDAQmxBackend(Backend):
                 task = nidaqmx.Task()
                 names = ",".join(f"{self.device}/{c}" for c in self.channels)
                 task.ao_channels.add_ao_voltage_chan(names, min_val=-self.output_limit, max_val=self.output_limit)
-                # A 500 ms device buffer tolerates normal Windows scheduling
-                # stalls.  Writes stay at 20 ms so replacement checks remain
-                # frequent without relying on a fragile 40 ms total buffer.
+                # The host buffer (buffer_s) must outlast Windows scheduling
+                # stalls, but every sample in it delays replacements.  Writes
+                # stay at 20 ms so replacement checks remain frequent.
                 chunk_samples = max(2, int(round(waveform.sample_rate_hz * 0.02)))
-                buffer_samples = chunk_samples * 25
+                buffer_samples = chunk_samples * max(2, int(round(self._buffer_s / 0.02)))
                 task.timing.cfg_samp_clk_timing(
                     waveform.sample_rate_hz,
                     sample_mode=acquisition.CONTINUOUS,
@@ -203,6 +212,9 @@ class NIDAQmxBackend(Backend):
                 # Rewriting a regenerating buffer can make the device alternate
                 # between old and new samples and raises DAQmx warning 200015.
                 task.out_stream.regen_mode = regeneration.DONT_ALLOW_REGENERATION
+                if self._data_xfer_req_cond is not None:
+                    from nidaqmx.constants import OutputDataTransferCondition
+                    task.ao_channels.all.ao_data_xfer_req_cond = OutputDataTransferCondition[self._data_xfer_req_cond]
                 writer = writer_type(task.out_stream, auto_start=False)
                 with self._lock:
                     self._task = task
@@ -237,7 +249,29 @@ class NIDAQmxBackend(Backend):
                 # previous action.  Each waits here with the absolute output
                 # position of its first sample until the device generates it.
                 pending = []
+                # Headroom is the output still queued ahead of the device (host
+                # buffer plus device FIFO).  Its minimum shows how close a run
+                # came to underflow: needed buffer ~ buffer - min headroom.
+                rate = waveform.sample_rate_hz
+                stats = {
+                    "buffer_s": buffer_samples / rate,
+                    "min_headroom_s": None,
+                    "max_headroom_s": None,
+                    "max_loop_gap_s": 0.0,
+                    "chunks": 0,
+                }
+                self.stream_stats = stats
+                last_loop = time.monotonic()
                 while not self._stop.is_set():
+                    now = time.monotonic()
+                    stats["max_loop_gap_s"] = max(stats["max_loop_gap_s"], now - last_loop)
+                    last_loop = now
+                    generated = task.out_stream.total_samp_per_chan_generated
+                    headroom = (written - generated) / rate
+                    if stats["min_headroom_s"] is None or headroom < stats["min_headroom_s"]:
+                        stats["min_headroom_s"] = headroom
+                    if stats["max_headroom_s"] is None or headroom > stats["max_headroom_s"]:
+                        stats["max_headroom_s"] = headroom
                     if self._replacement_event.is_set():
                         with self._lock:
                             replacement = self._replacement
@@ -251,7 +285,6 @@ class NIDAQmxBackend(Backend):
                             duration_sent = False
                             pending.append((written, replacement))
                     if pending:
-                        generated = task.out_stream.total_samp_per_chan_generated
                         while pending and generated >= pending[0][0]:
                             position, action = pending.pop(0)
                             if action is current:
@@ -264,6 +297,7 @@ class NIDAQmxBackend(Backend):
                     chunk, sample_index = next_chunk(current[0], sample_index)
                     writer.write_many_sample(chunk, timeout=2.0)
                     written += chunk.shape[1]
+                    stats["chunks"] += 1
                     last_sample = chunk[:, -1].copy()
 
                 ramp_samples = max(2, int(round(current[0].sample_rate_hz * self._safe_ramp_s)))
@@ -274,7 +308,6 @@ class NIDAQmxBackend(Backend):
                 # Stopping the task discards unplayed samples, so wait until
                 # the device has generated the final zero.  The deadline is
                 # bounded by what the device buffer can hold.
-                rate = current[0].sample_rate_hz
                 deadline = time.monotonic() + (buffer_samples + ramp_samples) / rate + 0.25
                 while time.monotonic() < deadline:
                     remaining = written - task.out_stream.total_samp_per_chan_generated
