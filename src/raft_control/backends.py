@@ -211,6 +211,11 @@ class NIDAQmxBackend(Backend):
                 last_sample = np.zeros(len(self.channels), dtype=float)
 
                 def next_chunk(source, index):
+                    # Evaluate on the absolute sample index so the output stays
+                    # phase-continuous for any frequency and any keep time.
+                    stream = getattr(source, "stream", None)
+                    if stream is not None:
+                        return np.ascontiguousarray(stream.samples(index, chunk_samples)), index + chunk_samples
                     values = source.clipped_currents_a
                     indices = (np.arange(chunk_samples) + index) % values.shape[1]
                     return np.ascontiguousarray(values[:, indices]), (index + chunk_samples) % values.shape[1]
@@ -235,6 +240,11 @@ class NIDAQmxBackend(Backend):
                             self._replacement_event.clear()
                         if replacement is not None:
                             current = replacement
+                            # A replacement starts its own waveform at phase 0.
+                            # Its samples are queued behind up to one buffer
+                            # (~500 ms) of the previous action, so "started"
+                            # marks when the replacement is queued, not when it
+                            # reaches the analog outputs.
                             sample_index = 0
                             started_at = time.monotonic()
                             duration_sent = False

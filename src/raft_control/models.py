@@ -56,6 +56,8 @@ class WaveformResult:
     sample_rate_hz: float
     calibration_version: str
     duration_s: float | None = None
+    # Procedural hardware source (WaveformStream); None for array-only waveforms.
+    stream: Any = None
 
 
 @dataclass(slots=True)

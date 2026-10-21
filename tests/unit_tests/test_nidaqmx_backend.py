@@ -225,3 +225,63 @@ def test_failed_worker_reports_error_and_can_start_fresh_task():
     assert restarted.wait(1)
     backend.stop()
     assert len(FakeTask.instances) >= 2
+
+
+def _wait_for_writes(count, timeout=2.0):
+    deadline = time.monotonic() + timeout
+    while len(FakeWriter.writes) < count and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert len(FakeWriter.writes) >= count
+
+
+def test_streamed_chunks_are_phase_continuous_across_window_boundaries():
+    from raft_control.config import ControllerConfig
+    from raft_control.models import ActionRequest
+    from raft_control.waveform import build_waveform
+
+    FakeTask.instances.clear()
+    FakeWriter.writes.clear()
+    # A 0.1 s preview window is far shorter than the 500 ms DAQ buffer, so a
+    # repeating window would wrap several times within the written samples.
+    config = ControllerConfig(sample_rate_hz=1_000, stream_window_s=0.1)
+    long_waveform = build_waveform(ActionRequest(30.038, 53.65, 45.99, 46.35, 0, 0, 300), config)
+    backend = DryBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005)
+
+    backend.start(long_waveform, lambda: None, lambda: None, lambda error: None)
+    _wait_for_writes(20)
+    backend.stop()
+
+    streamed = np.concatenate(FakeWriter.writes[:-1], axis=1)  # last write is the ramp
+    assert streamed.shape[1] > 5 * long_waveform.clipped_currents_a.shape[1]
+    np.testing.assert_allclose(streamed, long_waveform.stream.samples(0, streamed.shape[1]), atol=1e-12)
+
+
+def test_replacement_restarts_phase_at_zero():
+    from raft_control.config import ControllerConfig
+    from raft_control.models import ActionRequest
+    from raft_control.waveform import build_waveform
+
+    FakeTask.instances.clear()
+    FakeWriter.writes.clear()
+    config = ControllerConfig(sample_rate_hz=1_000, stream_window_s=0.1)
+    first = build_waveform(ActionRequest(30.038, 53.65, 45.99, 46.35, 0, 0, 300), config)
+    second = build_waveform(ActionRequest(20, 40, 12.34, 56.78, 0, 0, 300), config)
+    backend = DryBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005)
+    replaced_at = []
+    second_started = threading.Event()
+
+    backend.start(first, lambda: None, lambda: None, lambda error: None)
+    _wait_for_writes(5)
+    backend.replace(
+        second,
+        lambda: (replaced_at.append(len(FakeWriter.writes)), second_started.set()),
+        lambda: None,
+        lambda error: None,
+    )
+    assert second_started.wait(1)
+    _wait_for_writes(replaced_at[0] + 3)
+    backend.stop()
+
+    chunk = FakeWriter.writes[replaced_at[0]].shape[1]
+    after = np.concatenate(FakeWriter.writes[replaced_at[0]:replaced_at[0] + 3], axis=1)
+    np.testing.assert_allclose(after, second.stream.samples(0, 3 * chunk), atol=1e-12)
