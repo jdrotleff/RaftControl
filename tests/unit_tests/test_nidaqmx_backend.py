@@ -26,6 +26,22 @@ class FakeTiming:
         self.calls.append((args, kwargs))
 
 
+class FakeStream:
+    # None: the device generates samples as soon as they are written.
+    # Otherwise: the device's generated-sample count is held at this value.
+    generated_override = None
+
+    def __init__(self):
+        self.regen_mode = None
+        self.written = 0
+
+    @property
+    def total_samp_per_chan_generated(self):
+        if FakeStream.generated_override is None:
+            return self.written
+        return FakeStream.generated_override
+
+
 class FakeTask:
     instances = []
 
@@ -33,7 +49,7 @@ class FakeTask:
         self.ao_channels = FakeChannels()
         self.do_channels = FakeChannels()
         self.timing = FakeTiming()
-        self.out_stream = type("Stream", (), {"regen_mode": None})()
+        self.out_stream = FakeStream()
         self.started = False
         self.closed = False
         self.scalar_writes = []
@@ -60,6 +76,7 @@ class FakeWriter:
 
     def write_many_sample(self, values, timeout=None):
         FakeWriter.writes.append(values.copy())
+        self.stream.written += values.shape[1]
         time.sleep(0.001)
 
 
@@ -285,3 +302,52 @@ def test_replacement_restarts_phase_at_zero():
     chunk = FakeWriter.writes[replaced_at[0]].shape[1]
     after = np.concatenate(FakeWriter.writes[replaced_at[0]:replaced_at[0] + 3], axis=1)
     np.testing.assert_allclose(after, second.stream.samples(0, 3 * chunk), atol=1e-12)
+
+
+def test_replacement_started_waits_until_buffered_samples_are_generated():
+    from raft_control.config import ControllerConfig
+    from raft_control.models import ActionRequest
+    from raft_control.waveform import build_waveform
+
+    FakeTask.instances.clear()
+    FakeWriter.writes.clear()
+    FakeStream.generated_override = 0
+    config = ControllerConfig(sample_rate_hz=1_000, stream_window_s=0.1)
+    first = build_waveform(ActionRequest(30.038, 53.65, 45.99, 46.35, 0, 0, 300), config)
+    second = build_waveform(ActionRequest(20, 40, 12.34, 56.78, 0, 0, 0.05), config)
+    backend = DryBackend(["ao0", "ao1", "ao2", "ao3"], "Dev1", safe_ramp_s=0.005)
+    second_started = threading.Event()
+    second_duration = threading.Event()
+    try:
+        backend.start(first, lambda: None, lambda: None, lambda error: None)
+        _wait_for_writes(5)
+        backend.replace(second, second_started.set, second_duration.set, lambda error: None)
+
+        # Locate where the replacement's samples begin in the output stream.
+        head = second.stream.samples(0, 20)
+        deadline = time.monotonic() + 2
+        position = None
+        while position is None and time.monotonic() < deadline:
+            offset = 0
+            for values in list(FakeWriter.writes):
+                if values.shape == head.shape and np.allclose(values, head):
+                    position = offset
+                    break
+                offset += values.shape[1]
+            time.sleep(0.001)
+        assert position is not None
+
+        # Queued but not yet generated: neither started nor timing keep time.
+        FakeStream.generated_override = position - 1
+        time.sleep(0.15)
+        assert not second_started.is_set()
+        assert not second_duration.is_set()
+
+        # Once the device reaches the first replacement sample, it has started,
+        # and the 50 ms keep time is measured from that moment.
+        FakeStream.generated_override = position
+        assert second_started.wait(1)
+        assert second_duration.wait(1)
+    finally:
+        FakeStream.generated_override = None
+        backend.stop()

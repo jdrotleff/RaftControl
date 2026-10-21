@@ -227,11 +227,16 @@ class NIDAQmxBackend(Backend):
                     initial_parts.append(part)
                 initial = np.ascontiguousarray(np.concatenate(initial_parts, axis=1))
                 writer.write_many_sample(initial, timeout=2.0)
+                written = initial.shape[1]
                 last_sample = initial[:, -1].copy()
                 task.start()
                 on_started()
                 started_at = time.monotonic()
                 duration_sent = False
+                # Replacements queue behind up to one buffer (~500 ms) of the
+                # previous action.  Each waits here with the absolute output
+                # position of its first sample until the device generates it.
+                pending = []
                 while not self._stop.is_set():
                     if self._replacement_event.is_set():
                         with self._lock:
@@ -241,19 +246,24 @@ class NIDAQmxBackend(Backend):
                         if replacement is not None:
                             current = replacement
                             # A replacement starts its own waveform at phase 0.
-                            # Its samples are queued behind up to one buffer
-                            # (~500 ms) of the previous action, so "started"
-                            # marks when the replacement is queued, not when it
-                            # reaches the analog outputs.
                             sample_index = 0
-                            started_at = time.monotonic()
+                            started_at = None
                             duration_sent = False
-                            current[1]()
-                    if not duration_sent and time.monotonic() - started_at >= _keep_duration(current[0]):
+                            pending.append((written, replacement))
+                    if pending:
+                        generated = task.out_stream.total_samp_per_chan_generated
+                        while pending and generated >= pending[0][0]:
+                            position, action = pending.pop(0)
+                            if action is current:
+                                # Back-date to when the first sample was generated.
+                                started_at = time.monotonic() - (generated - position) / action[0].sample_rate_hz
+                            action[1]()
+                    if started_at is not None and not duration_sent and time.monotonic() - started_at >= _keep_duration(current[0]):
                         current[2]()
                         duration_sent = True
                     chunk, sample_index = next_chunk(current[0], sample_index)
                     writer.write_many_sample(chunk, timeout=2.0)
+                    written += chunk.shape[1]
                     last_sample = chunk[:, -1].copy()
 
                 ramp_samples = max(2, int(round(current[0].sample_rate_hz * self._safe_ramp_s)))
