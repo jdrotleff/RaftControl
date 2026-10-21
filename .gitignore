@@ -4,5 +4,5 @@ __pycache__/
 *.pyc
 logs/
 tests/.artifacts/
-
+.claude/
 token.md
