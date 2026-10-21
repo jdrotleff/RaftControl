@@ -8,6 +8,7 @@ import time
 
 from .config import load_config
 from .controller import FieldController
+from .priority import raise_process_priority
 from .protocol import FrameDecoder, encode_message
 
 
@@ -121,11 +122,17 @@ class RaftControlServer:
         raise ValueError(f"unknown request type: {kind}")
 
 
+def apply_process_priority(config) -> None:
+    if config.high_priority and not raise_process_priority():
+        print("RaftControl: could not raise process priority; continuing at normal priority")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
     config = load_config(args.config)
+    apply_process_priority(config)
     controller = FieldController(config)
     server = RaftControlServer(controller, config.bind_address, config.python_port)
     try:

@@ -102,3 +102,6 @@ Automated tests are dry: they use the simulation backend or a fake NI-DAQmx
 driver and never open `Dev1`. Unit tests live in `tests/unit_tests`; combined
 controller-flow tests live in `tests/integration_tests`. Physical coil testing
 is an explicit operator action performed through the GUI.
+
+Output streaming, latency, buffer sizing, rig measurements and the tests that
+cover them are documented in [docs/output-streaming.md](docs/output-streaming.md).

@@ -3,8 +3,9 @@
 For each buffer size the probe streams a real action, replaces it periodically
 (like an RL agent) and reports:
 
-- worst stall:   largest drop of the output queue below its steady level, i.e.
-                 the longest time the DAQ worker was not refilling the buffer
+- queue dip:     largest drop of the output queue below its peak level (worker
+                 stalls plus the device's bursty USB transfers)
+- loop gap:      longest time between two refills by the DAQ worker
 - min headroom:  output left queued at that worst moment (0 = underflow)
 - latency:       time from replace() until the replacement reached the outputs
 
@@ -30,6 +31,7 @@ import time
 from raft_control.backends import NIDAQmxBackend
 from raft_control.config import load_config
 from raft_control.models import ActionRequest
+from raft_control.priority import raise_process_priority
 from raft_control.waveform import build_waveform
 
 
@@ -52,9 +54,14 @@ def probe(config, buffer_s, seconds, replace_every, xfer_cond, actions):
     started = threading.Event()
     errors = []
     latencies = []
+
+    def on_done(error):
+        if error and error != "stopped":
+            errors.append(error)
+
     try:
         backend.initialize()  # enable line low; never call enable() here
-        backend.start(waveforms[0], started.set, lambda: None, lambda e: e and e != "stopped" and errors.append(e))
+        backend.start(waveforms[0], started.set, lambda: None, on_done)
         if not started.wait(5):
             raise RuntimeError("stream did not start")
         end = time.monotonic() + seconds
@@ -66,7 +73,14 @@ def probe(config, buffer_s, seconds, replace_every, xfer_cond, actions):
             index += 1
             reached = threading.Event()
             queued = time.monotonic()
-            backend.replace(waveforms[index % len(waveforms)], reached.set, lambda: None, lambda e: None)
+            try:
+                backend.replace(waveforms[index % len(waveforms)], reached.set, lambda: None, on_done)
+            except RuntimeError:
+                # The stream task ended on its own; give its error a moment to arrive.
+                time.sleep(0.5)
+                if not errors:
+                    errors.append("stream task ended unexpectedly")
+                break
             if reached.wait(5):
                 latencies.append(time.monotonic() - queued)
     finally:
@@ -85,6 +99,8 @@ def main():
     parser.add_argument("--xfer-cond", default=None,
                         help="OutputDataTransferCondition name, e.g. ON_BOARD_MEMORY_EMPTY or ON_BOARD_MEMORY_HALF_FULL_OR_LESS")
     parser.add_argument("--cpu-load", type=int, default=0, help="number of CPU-burning processes")
+    parser.add_argument("--high-priority", action="store_true",
+                        help="run this process in the Windows HIGH priority class")
     parser.add_argument("--allow-without-enable-line", action="store_true",
                         help="run although no amplifier_enable_line is configured (make sure the amplifier is off)")
     args = parser.parse_args()
@@ -103,9 +119,11 @@ def main():
     for process in burners:
         process.start()
     try:
+        if args.high_priority and not raise_process_priority():
+            raise SystemExit("could not raise process priority")
         print(f"{config.sample_rate_hz:g} Hz, {len(config.channels)} channels, xfer-cond={args.xfer_cond or 'default'}, "
-              f"cpu-load={args.cpu_load}, {args.seconds:g} s per buffer")
-        print(f"{'buffer':>8} {'queue':>8} {'worst stall':>12} {'min headroom':>13} {'latency med/max':>16}  result")
+              f"cpu-load={args.cpu_load}, priority={'high' if args.high_priority else 'normal'}, {args.seconds:g} s per buffer")
+        print(f"{'buffer':>8} {'queue':>8} {'queue dip':>10} {'loop gap':>9} {'min headroom':>13} {'latency med/max':>16}  result")
         for buffer_s in args.buffers:
             stats, latencies, errors = probe(config, buffer_s, args.seconds, args.replace_every, args.xfer_cond, actions)
             queue = stats.get("max_headroom_s")
@@ -114,7 +132,8 @@ def main():
             latency = (f"{statistics.median(latencies) * 1e3:.0f}/{max(latencies) * 1e3:.0f} ms" if latencies else "-")
             fmt = lambda v: f"{v * 1e3:.0f} ms" if v is not None else "-"
             result = f"FAILED: {errors[0]}" if errors else "ok"
-            print(f"{buffer_s * 1e3:>5.0f} ms {fmt(queue):>8} {fmt(stall):>12} {fmt(low):>13} {latency:>16}  {result}")
+            gap = stats.get("max_loop_gap_s")
+            print(f"{buffer_s * 1e3:>5.0f} ms {fmt(queue):>8} {fmt(stall):>10} {fmt(gap):>9} {fmt(low):>13} {latency:>16}  {result}")
     finally:
         for process in burners:
             process.terminate()

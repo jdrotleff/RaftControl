@@ -82,7 +82,7 @@ class FieldController:
                 self.backend.start(waveform, lambda: self._started(action_id), lambda: self._duration(action_id), lambda e: self._done(action_id, e))
             else:
                 self._emit(record, ActionStatus.QUEUED)
-                self._replace_active(action_id)
+                self._replace_active(action_id, waveform)
             return record
 
     def status(self, action_id: str) -> ActionRecord:
@@ -110,8 +110,10 @@ class FieldController:
         self.backend.close()
 
     def _record(self, action_id, request, waveform, status, error=None):
+        # Records live for the whole session, so keep only per-channel extremes:
+        # full sample arrays would grow by megabytes per action.
         values = waveform.clipped_currents_a
-        return ActionRecord(action_id, request, status, self.backend.name, self.config.channel_mapping, waveform.calibration_version, values.copy(), values.copy(), bool(waveform.clipped.any()), values.min(axis=1).tolist(), values.max(axis=1).tolist(), error=error)
+        return ActionRecord(action_id, request, status, self.backend.name, self.config.channel_mapping, waveform.calibration_version, None, None, bool(waveform.clipped.any()), values.min(axis=1).tolist(), values.max(axis=1).tolist(), error=error)
 
     def _store_event(self, record, status):
         with self._lock:
@@ -152,7 +154,7 @@ class FieldController:
             self._emit(record, ActionStatus.DURATION_ELAPSED)
             self.logger.write("tail_started", action_id=action_id)
 
-    def _replace_active(self, action_id):
+    def _replace_active(self, action_id, new_waveform):
         old_id = self._active
         if old_id is None:
             return
@@ -163,7 +165,6 @@ class FieldController:
         self._emit(old, ActionStatus.COMPLETED)
         self._emit(old, ActionStatus.REPLACED)
         self._active = action_id
-        new_waveform = build_waveform(new.request, self.config)
         self.backend.replace(new_waveform, lambda: self._started(action_id), lambda: self._duration(action_id), lambda e: self._done(action_id, e))
 
     def _done(self, action_id, error):

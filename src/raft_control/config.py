@@ -30,6 +30,9 @@ class ControllerConfig:
     stream_buffer_s: float = 0.5
     # Optional nidaqmx OutputDataTransferCondition name (device FIFO fill).
     ao_data_xfer_req_cond: str | None = None
+    # Run the server in the Windows HIGH priority class so CPU load from other
+    # programs cannot starve the DAQ stream.
+    high_priority: bool = False
     current_limit_a: float = 10.0
     min_grad: float = DEFAULT_MIN_GRAD
     max_grad: float = DEFAULT_MAX_GRAD
