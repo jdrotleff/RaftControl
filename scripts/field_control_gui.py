@@ -66,6 +66,11 @@ def main(argv: list[str] | None = None):
         action="store_true",
         help="Controller mode: show a button for generating random field actions",
     )
+    parser.add_argument(
+        "--allow-negative-b",
+        action="store_true",
+        help="Test only: accept negative B_x/B_y (flips the sign, i.e. a 180 deg phase shift on that axis)",
+    )
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     args = parser.parse_args(argv)
@@ -130,9 +135,10 @@ def main(argv: list[str] | None = None):
     def get_action() -> ActionRequest | None:
         try:
             values = {name: float(entry.get() or 0.0) for name, entry in entries.items()}
+            b_min = -runtime_config.max_G if args.allow_negative_b else 0.0
             bounds = {
-                "bx": (0.0, runtime_config.max_G),
-                "by": (0.0, runtime_config.max_G),
+                "bx": (b_min, runtime_config.max_G),
+                "by": (b_min, runtime_config.max_G),
                 "fx": (runtime_config.min_freq, runtime_config.max_freq),
                 "fy": (runtime_config.min_freq, runtime_config.max_freq),
                 "FX": (runtime_config.min_grad, runtime_config.max_grad),
